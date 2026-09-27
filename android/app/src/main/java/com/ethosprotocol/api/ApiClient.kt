@@ -26,6 +26,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import android.util.Base64
+import android.os.SystemClock
+import com.ethosprotocol.utils.PerformanceMonitor
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import java.security.SecureRandom
@@ -229,10 +231,17 @@ class ApiClient(
         return runCatching {
             val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
                 singleFlightGet(path) {
-                    client.get("$baseUrl$path") {
+                    val _apmStart = SystemClock.elapsedRealtime()
+                    val result = client.get("$baseUrl$path") {
                         standardHeaders()
                         bearerAuth()
                     }.toApiResult(path)
+                    PerformanceMonitor.recordApiCall(
+                        path, "GET",
+                        (SystemClock.elapsedRealtime() - _apmStart).toDouble(),
+                        if (result is ApiResult.Success<*>) 200 else 0
+                    )
+                    result
                 }
             }
             response
@@ -249,6 +258,7 @@ class ApiClient(
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
+            val _apmStart = SystemClock.elapsedRealtime()
             val response = client.post("$baseUrl$path") {
                 standardHeaders()
                 bearerAuth()
@@ -257,7 +267,7 @@ class ApiClient(
                 setBody(body)
             }
             ApiCompressionMetrics.record(response)
-            when (response.status.value) {
+            val result = when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
                 // recovery token/proof on completeRecovery) — surface it instead of the
@@ -266,6 +276,12 @@ class ApiClient(
                 429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
+            PerformanceMonitor.recordApiCall(
+                path, "POST",
+                (SystemClock.elapsedRealtime() - _apmStart).toDouble(),
+                response.status.value
+            )
+            result
         }.getOrElse { e ->
             circuitBreaker.recordFailure()
             ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }
@@ -277,6 +293,7 @@ class ApiClient(
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
+            val _apmStart = SystemClock.elapsedRealtime()
             val response = client.delete("$baseUrl$path") {
                 standardHeaders()
                 bearerAuth()
@@ -288,7 +305,7 @@ class ApiClient(
             // Ktor does not throw on non-2xx responses by default, so the status must be
             // checked explicitly here (as get()/post() already do) — otherwise a failed
             // deletion (401/500/etc.) is silently reported back to callers as success.
-            when (response.status.value) {
+            val result = when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
                 // recovery token/proof on completeRecovery) — surface it instead of the
@@ -297,6 +314,12 @@ class ApiClient(
                 429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
+            PerformanceMonitor.recordApiCall(
+                path, "DELETE",
+                (SystemClock.elapsedRealtime() - _apmStart).toDouble(),
+                response.status.value
+            )
+            result
         }.getOrElse { e ->
             circuitBreaker.recordFailure()
             ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }

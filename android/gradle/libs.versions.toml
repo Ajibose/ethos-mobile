@@ -58,6 +58,7 @@ credentials = { group = "androidx.credentials", name = "credentials", version.re
 credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebase-bom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging-ktx" }
+firebase-perf = { group = "com.google.firebase", name = "firebase-perf-ktx" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }
 json = { group = "org.json", name = "json", version = "20240303" }
 robolectric = { group = "org.robolectric", name = "robolectric", version = "4.14.1" }

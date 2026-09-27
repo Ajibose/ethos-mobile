@@ -234,9 +234,11 @@ dependencies {
     implementation(libs.credentials)
     implementation(libs.credentials.play.services.auth)
 
-    // Firebase Messaging (push notifications)
+    // Firebase Messaging (push notifications) + Performance Monitoring
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
+    implementation(libs.firebase.perf)
+    implementation(libs.firebase.perf)
 
     // Room (offline check-in queue)
     implementation(libs.room.runtime)
