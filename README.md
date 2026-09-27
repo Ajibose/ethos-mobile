@@ -6,6 +6,9 @@
 > [`/.well-known/security.txt`](.well-known/security.txt) and will also be served from
 > `https://ethos-protocol.app/.well-known/security.txt` once the domain is configured.
 
+[![iOS Coverage](https://codecov.io/gh/ethos-protocol/ethos-mobile/branch/main/graph/badge.svg?flag=ios)](https://codecov.io/gh/ethos-protocol/ethos-mobile?flag=ios)
+[![Android Coverage](https://codecov.io/gh/ethos-protocol/ethos-mobile/branch/main/graph/badge.svg?flag=android)](https://codecov.io/gh/ethos-protocol/ethos-mobile?flag=android)
+
 ## Overview
 
 Ethos-Protocol mobile apps (iOS + Android) provide a native interface for managing vaults, checking in, and receiving expiry reminders. Both apps share the same REST API contract and feature set.

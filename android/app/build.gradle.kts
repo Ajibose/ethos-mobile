@@ -297,7 +297,7 @@ tasks.withType<Test>().configureEach {
     }
 }
 
-task<JacocoReport>("jacocoTestReport") {
+tasks.register<JacocoReport>("jacocoTestReport") {
     dependsOn(tasks.testDebugUnitTest)
     group = "Coverage"
     description = "Generate JaCoCo coverage report for unit tests"
@@ -315,16 +315,48 @@ task<JacocoReport>("jacocoTestReport") {
         )
     )
 
+    val buildDir = layout.buildDirectory
+
     classDirectories.setFrom(
         files(
-            fileTree("${project.buildDir}/intermediates/classes/debug/"),
-            fileTree("${project.buildDir}/tmp/kotlin-classes/debug/")
+            fileTree(buildDir.dir("intermediates/classes/debug/")) {
+                exclude(
+                    "**/R.class",
+                    "**/R$*.class",
+                    "**/BuildConfig.*",
+                    "**/Manifest*.*",
+                    "**/*Test*.*",
+                    "android/**/*.*",
+                    "**/di/**",
+                    "**/*_HiltComponents*",
+                    "**/*_MembersInjector*",
+                    "**/*_Factory*",
+                    "**/*Module_*",
+                    "**/*_Provide*",
+                    "hilt_aggregated_deps/**"
+                )
+            },
+            fileTree(buildDir.dir("tmp/kotlin-classes/debug/")) {
+                exclude(
+                    "**/R.class",
+                    "**/R$*.class",
+                    "**/BuildConfig.*",
+                    "**/Manifest*.*",
+                    "**/*Test*.*",
+                    "android/**/*.*",
+                    "**/di/**",
+                    "**/*_HiltComponents*",
+                    "**/*_MembersInjector*",
+                    "**/*_Factory*",
+                    "**/*Module_*",
+                    "**/*_Provide*",
+                    "hilt_aggregated_deps/**"
+                )
+            }
         )
     )
 
     executionData.setFrom(
-        files(
-            "${project.buildDir}/jacoco/testDebugUnitTest.exec"
-        )
+        files(buildDir.file("jacoco/testDebugUnitTest.exec"))
     )
 }
