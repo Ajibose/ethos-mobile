@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 
 enum APIError: LocalizedError {
     case unauthorized
@@ -450,26 +451,66 @@ public final class APIClient {
         // that never actually reached the server, which is unacceptable for this app.
         let isCacheableRead = request.httpMethod == "GET"
 
+        // APM: capture wall-clock start time before any network work (including retries).
+        // CACurrentMediaTime() is monotonic; unaffected by system clock changes.
+        let apmStart = CACurrentMediaTime()
+
         guard networkMonitor.isConnected else {
             if isCacheableRead, let cached = OfflineCache.shared.load(for: request.url?.absoluteString ?? "") {
                 // No real HTTP response exists for a cache hit — synthesize a bare 200 with
                 // no headers, so e.g. listVaults()'s pagination-cursor header lookup just
                 // reports "no more pages" instead of crashing on a missing response.
                 let syntheticResponse = HTTPURLResponse(url: request.url ?? baseURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                // Cache hits are not recorded: no network round-trip occurred, so the
+                // duration would not reflect server latency (#APM).
                 return (cached, syntheticResponse)
             }
+            // Record network-unavailable failures as status -1 so they appear in APM
+            // slow-call stats without a valid HTTP status code.
+            let durationMs = (CACurrentMediaTime() - apmStart) * 1_000
+            PerformanceMonitor.shared.recordAPICall(
+                path: request.url?.path ?? "",
+                method: request.httpMethod ?? "GET",
+                durationMs: durationMs,
+                statusCode: -1
+            )
             throw APIError.networkUnavailable
         }
 
         let (data, response): (Data, URLResponse)
-        if Self.isRetryable(method: request.httpMethod) {
-            (data, response) = try await withRetry(retryPolicy, isRetryable: Self.isTransientNetworkError) {
-                try await session.data(for: request)
+        do {
+            if Self.isRetryable(method: request.httpMethod) {
+                (data, response) = try await withRetry(retryPolicy, isRetryable: Self.isTransientNetworkError) {
+                    try await session.data(for: request)
+                }
+            } else {
+                (data, response) = try await session.data(for: request)
             }
-        } else {
-            (data, response) = try await session.data(for: request)
+        } catch {
+            // Transport/TLS/timeout errors that escaped retries: record with statusCode 0.
+            let durationMs = (CACurrentMediaTime() - apmStart) * 1_000
+            PerformanceMonitor.shared.recordAPICall(
+                path: request.url?.path ?? "",
+                method: request.httpMethod ?? "GET",
+                durationMs: durationMs,
+                statusCode: 0
+            )
+            throw error
         }
+
         guard let http = response as? HTTPURLResponse else { throw APIError.serverError("Invalid response") }
+
+        // Record duration + status for all responses (2xx, 4xx, 5xx).
+        // Per the redaction policy above: only path, method, status, and duration
+        // are recorded — no request/response bodies, headers, or tokens.
+        let durationMs = (CACurrentMediaTime() - apmStart) * 1_000
+        PerformanceMonitor.shared.recordAPICall(
+            path: request.url?.path ?? "",
+            method: request.httpMethod ?? "GET",
+            durationMs: durationMs,
+            statusCode: http.statusCode
+        )
+
         switch http.statusCode {
         case 200...299:
             if isCacheableRead {

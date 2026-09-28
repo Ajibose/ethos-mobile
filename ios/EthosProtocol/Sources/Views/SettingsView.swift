@@ -57,6 +57,7 @@ struct SettingsView: View {
             #endif
         }
         .navigationTitle("Settings")
+        .trackScreen("Settings")
         .sheet(isPresented: $showPINChange) {
             PINChangeView()
         }

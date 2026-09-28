@@ -13,12 +13,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ethosprotocol.models.NotificationPreferences
 import com.ethosprotocol.ui.NotificationPreferencesViewModel
+import com.ethosprotocol.utils.TrackScreen
 
 @Composable
 fun NotificationPreferencesScreen(
     onBack: () -> Unit,
     vm: NotificationPreferencesViewModel = hiltViewModel()
 ) {
+    TrackScreen("NotificationPreferences")
     val state by vm.state.collectAsStateWithLifecycle()
     NotificationPreferencesContent(
         preferences = state.preferences,
