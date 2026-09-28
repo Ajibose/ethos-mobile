@@ -247,8 +247,12 @@ struct TTLWidgetView: View {
             mediumView
         case .systemLarge:
             largeView
-        case .accessoryRectangular, .accessoryCircular:
-            compactView
+        case .accessoryRectangular:
+            // #436: Lock screen rectangular view — vault name + TTL, no balance/beneficiary
+            TTLAccessoryRectangularView(entry: entry)
+        case .accessoryCircular:
+            // #436: Lock screen circular view — TTL ring with vault indicator
+            TTLAccessoryCircularView(entry: entry)
         default:
             smallView
         }
@@ -455,6 +459,97 @@ struct TTLWidgetView: View {
 
     private func formatDuration(_ seconds: UInt64) -> String {
         DateTimeFormatter.shared.formatDurationInSeconds(seconds)
+    }
+}
+
+// MARK: - Lock Screen Widget Views (#436)
+//
+// accessoryRectangular and accessoryCircular are iOS 16+ lock screen families.
+// Both are read-only displays — the tap target opens the app via widgetURL to
+// the vault detail screen where the user can check in.
+//
+// Quick Check-In from the lock screen is wired via QuickCheckInIntent (Button with
+// AppIntent) — the medium home-screen widget includes this; the lock screen families
+// use widgetURL only because interactive controls require WidgetKit interactivity
+// (iOS 17+) which is a future enhancement.
+
+/// #436: Rectangular lock screen widget — vault name + TTL countdown.
+/// Shown in the `.accessoryRectangular` WidgetKit family (iOS 16+).
+struct TTLAccessoryRectangularView: View {
+    let entry: VaultEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
+                .font(.caption2.bold())
+                .accessibilityHidden(true)
+            Text(entry.vaultName)
+                .font(.caption.bold())
+                .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
+            if let ttl = entry.ttlRemaining {
+                Text(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+                    .font(.caption2)
+                    .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+            } else {
+                Text(entry.hasError ? LocalizedStrings.widgetErrorTitle : "—")
+                    .font(.caption2)
+                    .foregroundStyle(entry.hasError ? .red : .secondary)
+                    .accessibilityLabel(entry.hasError ? "Sync failed" : "Time remaining unknown")
+            }
+        }
+        .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// #436: Circular lock screen widget — TTL as a compact Gauge ring.
+/// Shown in the `.accessoryCircular` WidgetKit family (iOS 16+).
+struct TTLAccessoryCircularView: View {
+    let entry: VaultEntry
+
+    // Maximum TTL shown as a full ring (24 hours expressed in seconds).
+    private let maxTTL: Double = 86_400
+
+    var body: some View {
+        ZStack {
+            if let ttl = entry.ttlRemaining {
+                let fraction = min(Double(ttl) / maxTTL, 1.0)
+                Gauge(value: fraction) {
+                    Image(systemName: "lock.shield.fill")
+                        .accessibilityHidden(true)
+                } currentValueLabel: {
+                    Text(compactDuration(ttl))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.5)
+                        .accessibilityLabel("Time remaining")
+                        .accessibilityValue(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+                }
+                .gaugeStyle(.accessoryCircular)
+                .tint(entry.isExpiringSoon ? .orange : .cyan)
+            } else {
+                // Error or no-data state — show shield with exclamation
+                Image(systemName: entry.hasError ? "exclamationmark.icloud.fill" : "lock.shield")
+                    .font(.title3)
+                    .foregroundStyle(entry.hasError ? .red : .secondary)
+                    .accessibilityLabel(entry.hasError ? "Sync failed" : "No vault data")
+            }
+        }
+        .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+    }
+
+    /// Compact 4-char-max duration for the circular widget label (e.g. "23h", "2d").
+    private func compactDuration(_ seconds: UInt64) -> String {
+        let hours = seconds / 3600
+        let days = seconds / 86400
+        if days > 0 { return "\(days)d" }
+        if hours > 0 { return "\(hours)h" }
+        return "\(seconds / 60)m"
     }
 }
 
