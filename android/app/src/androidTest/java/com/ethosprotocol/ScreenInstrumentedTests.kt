@@ -4,8 +4,10 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
+import com.ethosprotocol.services.ExpiringVaultsManager
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthViewModel
@@ -410,7 +412,9 @@ class VaultDeepLinkScreenTest {
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private val vaultEventSocket: VaultEventSocket = mockk(relaxed = true)
-    private val notificationDeliveryLog: NotificationDeliveryLog = mockk(relaxed = true)
+    private val expiringVaultsManager: ExpiringVaultsManager = mockk(relaxed = true)
+    private val offlineCache: OfflineCache = mockk(relaxed = true)
+    private val fakeNetworkMonitor = FakeNetworkMonitor(startOnline = true)
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var vm: VaultViewModel
 
@@ -419,7 +423,17 @@ class VaultDeepLinkScreenTest {
         hiltRule.inject()
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, notificationDeliveryLog, context)
+        every { expiringVaultsManager.bannerState } returns kotlinx.coroutines.flow.MutableStateFlow(null).asStateFlow()
+        vm = VaultViewModel(
+            apiClient = apiClient,
+            notificationHelper = notificationHelper,
+            pendingActionDao = pendingActionDao,
+            vaultEventSocket = vaultEventSocket,
+            expiringVaultsManager = expiringVaultsManager,
+            offlineCache = offlineCache,
+            networkMonitor = fakeNetworkMonitor,
+            context = context
+        )
     }
 
     private fun makeVault(id: String) = Vault(

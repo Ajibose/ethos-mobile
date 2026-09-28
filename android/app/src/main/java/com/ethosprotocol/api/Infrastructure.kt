@@ -2,7 +2,9 @@ package com.ethosprotocol.api
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.ethosprotocol.models.AuthToken
@@ -17,16 +19,59 @@ import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
-    val isConnected: Boolean
+
+    /** Snapshot check — true when there is an active network with internet capability. */
+    open val isConnected: Boolean
         get() {
             val cm = context.getSystemService(ConnectivityManager::class.java)
             val network = cm.activeNetwork ?: return false
             val caps = cm.getNetworkCapabilities(network) ?: return false
             return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         }
+
+    /**
+     * Cold [Flow] that emits the current connectivity state immediately on collection,
+     * then emits again whenever it changes. Suitable for `collectAsStateWithLifecycle`
+     * in Compose UI and for triggering sync on reconnect in ViewModels.
+     *
+     * Emits `true` when at least one network with [NetworkCapabilities.NET_CAPABILITY_INTERNET]
+     * is available, `false` when none is. [distinctUntilChanged] suppresses duplicate emissions
+     * (e.g. if two networks overlap during a hand-off).
+     */
+    open val connectivityFlow: Flow<Boolean> = callbackFlow {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                trySend(true)
+            }
+            override fun onLost(network: Network) {
+                // Re-evaluate: there may still be another connected network.
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return)
+                trySend(caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true)
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                trySend(caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+            }
+        }
+
+        // Emit current state immediately so collectors don't need a separate isConnected check.
+        trySend(isConnected)
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        cm.registerNetworkCallback(request, callback)
+
+        awaitClose { cm.unregisterNetworkCallback(callback) }
+    }.distinctUntilChanged()
 }
 
 // Wraps a cached response with the wall-clock time it was written, so callers can tell how
