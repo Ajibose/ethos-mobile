@@ -1,5 +1,7 @@
 package com.ethosprotocol.api
 
+// ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
+
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
