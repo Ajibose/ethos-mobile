@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ethos-Protocol API Rate Limit Status</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        h1 { color: #1a1a2e; border-bottom: 2px solid #e94560; padding-bottom: 10px; }
+        h2 { color: #16213e; margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        th { background: #1a1a2e; color: #fff; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 10px 12px; border-bottom: 1px solid #eee; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover { background: #f8f9fa; }
+        .category { background: #e94560; color: #fff; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; }
+        .endpoint { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9em; }
+        .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; border-radius: 4px; margin: 16px 0; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <h1>Ethos-Protocol API Rate Limit Status</h1>
+
+    <div class="note">
+        <strong>Note:</strong> This page documents the configured rate limit quotas for each endpoint category.
+        When a limit is exceeded, the server responds with HTTP <code>429</code> and a <code>Retry-After</code> header.
+    </div>
+
+    <h2>Authentication Endpoints</h2>
+    <table>
+        <thead>
+            <tr><th>Endpoint</th><th>Rate Limit</th><th>Quota Window</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            <tr><td class="endpoint">POST /auth/challenge</td><td>30 requests</td><td>1 minute</td><td>Per IP address</td></tr>
+            <tr><td class="endpoint">POST /auth/verify</td><td>30 requests</td><td>1 minute</td><td>Per IP address</td></tr>
+            <tr><td class="endpoint">POST /auth/register</td><td>10 requests</td><td>1 minute</td><td>Per IP address</td></tr>
+            <tr><td class="endpoint">POST /auth/refresh</td><td>60 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /auth/recover/link</td><td>5 requests</td><td>1 minute</td><td>Per IP address</td></tr>
+            <tr><td class="endpoint">GET /auth/sessions</td><td>60 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">DELETE /auth/sessions/{id}</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">DELETE /auth/sessions</td><td>10 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Vault Endpoints</h2>
+    <table>
+        <thead>
+            <tr><th>Endpoint</th><th>Rate Limit</th><th>Quota Window</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            <tr><td class="endpoint">GET /vaults</td><td>120 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">GET /vaults/{id}</td><td>120 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults/{id}/checkin</td><td>60 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults/{id}/deposit</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults/{id}/withdraw</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults/{id}/beneficiary</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">GET /vaults/{id}/ttl</td><td>120 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">POST /vaults/{id}/accept</td><td>10 requests</td><td>1 minute</td><td>Per vault (one-time token)</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Notification Endpoints</h2>
+    <table>
+        <thead>
+            <tr><th>Endpoint</th><th>Rate Limit</th><th>Quota Window</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            <tr><td class="endpoint">POST /notifications/register</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+            <tr><td class="endpoint">DELETE /notifications/register</td><td>30 requests</td><td>1 minute</td><td>Per authenticated user</td></tr>
+        </tbody>
+    </table>
+
+    <h2>WebSocket</h2>
+    <table>
+        <thead>
+            <tr><th>Endpoint</th><th>Rate Limit</th><th>Quota Window</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            <tr><td class="endpoint">wss://api.ethos-protocol.app/v1/ws</td><td>10 connections</td><td>1 minute</td><td>Per authenticated user</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Client-Side Rate Limiters</h2>
+    <table>
+        <thead>
+            <tr><th>Limiter</th><th>Scope</th><th>Behavior</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>OTP Verification</td><td>2FA attempts</td><td>Escalating cooldown: 0s (1-2 failures), 30s (3), 60s (4), 120s (5+)</td></tr>
+            <tr><td>Deep Link Calls</td><td>Per vault ID</td><td>2-second minimum interval between API calls</td></tr>
+            <tr><td>WebSocket Reconnect</td><td>Connection drops</td><td>Exponential backoff with full jitter (base 1s, max 30s)</td></tr>
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <p>For the full rate limit documentation including backoff strategies and code references, see <code>docs/api-rate-limits.md</code>.</p>
+        <p>API Base URL: <code>https://api.ethos-protocol.app/v1</code></p>
+    </div>
+</body>
+</html>
