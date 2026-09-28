@@ -15,6 +15,21 @@
         android:dataExtractionRules="@xml/backup_rules"
         android:supportsRtl="true">
 
+        <!-- Sentry crash reporting (#425). The DSN is injected at build time via the
+             SENTRY_DSN manifest placeholder; when empty, Sentry stays disabled. -->
+        <meta-data
+            android:name="io.sentry.dsn"
+            android:value="${SENTRY_DSN}" />
+        <meta-data
+            android:name="io.sentry.environment"
+            android:value="${SENTRY_ENVIRONMENT}" />
+        <meta-data
+            android:name="io.sentry.release"
+            android:value="${applicationId}@${versionName}+${versionCode}" />
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="true" />
+
         <!-- EthosProtocolApplication implements Configuration.Provider to install the Hilt
              WorkerFactory (on-demand WorkManager initialization), so the default
              androidx.startup WorkManagerInitializer must be disabled, otherwise WorkManager
