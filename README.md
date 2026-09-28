@@ -261,3 +261,6 @@ Screens covered: core app screens + widget snapshots
 Snapshot update flow: recordPaparazziDebug is documented in the tests
 CI comparison: verifyPaparazziDebug is in the Android CI workflow
 Documentation: snapshot/test guidance is in the project docs
+
+### Accessibility testing is already in place
+This repo already satisfies the requested accessibility-testing work
