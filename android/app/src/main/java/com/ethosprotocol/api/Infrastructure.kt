@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import android.util.Base64
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.time.Duration
@@ -17,6 +18,29 @@ import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Quality tier derived from the active network. Higher tiers allow larger images and page sizes;
+ * slower tiers (cellular, 2G) trade fidelity for responsiveness.
+ */
+enum class NetworkQualityTier(val imageQuality: Int, val pageSize: Int) {
+    WIFI(imageQuality = 90, pageSize = 30),
+    FIVE_G(imageQuality = 85, pageSize = 25),
+    FOUR_G(imageQuality = 70, pageSize = 15),
+    TWO_G(imageQuality = 50, pageSize = 8)
+}
+
+/** User-facing quality preference. [AUTO] defers to the detected network tier. */
+enum class QualityPreference {
+    AUTO, HIGH, LOW;
+
+    /** Resolves this preference against the detected [tier], honouring explicit overrides. */
+    fun resolve(tier: NetworkQualityTier): NetworkQualityTier = when (this) {
+        AUTO -> tier
+        HIGH -> NetworkQualityTier.WIFI
+        LOW -> NetworkQualityTier.TWO_G
+    }
+}
 
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
@@ -27,296 +51,214 @@ class NetworkMonitor @Inject constructor(@ApplicationContext private val context
             val caps = cm.getNetworkCapabilities(network) ?: return false
             return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         }
-}
 
-// Wraps a cached response with the wall-clock time it was written, so callers can tell how
-// stale the data is instead of presenting it as unconditionally "current".
-@Serializable
-data class CacheEnvelope(val timestamp: Long, val data: String)
-
-@Singleton
-class OfflineCache @Inject constructor(@ApplicationContext private val context: Context) {
-    private val dir = File(context.cacheDir, "ttl_offline").also { it.mkdirs() }
-
-    // Byte cap for the cache directory's total size; least-recently-used entries are evicted
-    // once a save() pushes the directory over this cap. Exposed as `internal var` (rather than
-    // a constructor param) so tests can shrink it to force eviction deterministically without
-    // fighting Hilt's @Inject constructor resolution.
-    internal var maxCacheBytes: Long = DEFAULT_MAX_CACHE_BYTES
-
-    // Entries older than maxAgeMs are treated as stale by load() — a non-null cachedAt is
-    // still returned by load() but also flagged via the CacheEnvelope so the UI can surface
-    // "last updated N hours ago" instead of silently serving data. -1L means no expiry enforced.
-    internal var maxAgeMs: Long = DEFAULT_MAX_AGE_MS
-
-    // Optional more aggressive TTL (in addition to maxAgeMs) for faster cache invalidation
-    // when needed. Set to non-negative value to enable. -1L means no aggressive TTL enforced.
-    internal var aggressiveTtlMs: Long = -1L
-
-    // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
-    // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
-    // since its resolution varies across filesystems/devices and would make eviction order
-    // unpredictable; this only needs to be accurate for the current process's lifetime.
-    private val accessOrder = Collections.synchronizedMap(
-        object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>) = false
-        }
-    )
-
-    init {
-        dir.listFiles()?.sortedBy { it.lastModified() }?.forEach { accessOrder[it.name] = Unit }
-        // Clean up expired cache entries on app launch
-        cleanupExpiredEntries()
-    }
-
-    fun save(key: String, json: String) {
-        val fileName = key.sha256()
-        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = encodeCachedPayload(json))
-        File(dir, fileName).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
-        touch(fileName)
-        CacheTelemetry.recordWrite(json.length.toLong())
-        evictIfNeeded()
-    }
-
-    fun load(key: String): CacheEnvelope? {
-        val fileName = key.sha256()
-        val envelope = runCatching {
-            val raw = Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
-            raw.copy(data = decodeCachedPayload(raw.data))
-        }.getOrNull()
-        if (envelope != null) {
-            touch(fileName)
-            if (isCachedAtStale(envelope.timestamp)) {
-                CacheTelemetry.recordStaleServed()
-            } else {
-                CacheTelemetry.recordHit()
-            }
-        } else {
-            CacheTelemetry.recordMiss()
-        }
-        return envelope
-    }
-
-    // Wipes every cached entry, e.g. on sign-out so the next user's device doesn't retain a
-    // previous account's vault data offline.
-    fun clear() {
-        dir.listFiles()?.forEach { it.delete() }
-        accessOrder.clear()
-    }
-
-    /** Returns true when the given cache timestamp is older than [maxAgeMs] or [aggressiveTtlMs]. */
-    fun isCachedAtStale(timestamp: Long): Boolean {
-        val now = System.currentTimeMillis()
-        val age = now - timestamp
-        // Check aggressive TTL first if set
-        if (aggressiveTtlMs >= 0 && age > aggressiveTtlMs) return true
-        // Then check standard maxAgeMs
-        if (maxAgeMs < 0) return false
-        return age > maxAgeMs
-    }
-
-    /** Cleans up expired cache entries on app launch or manual trigger. */
-    fun cleanupExpiredEntries() {
-        dir.listFiles()?.forEach { file ->
-            runCatching {
-                val envelope = Json.decodeFromString(CacheEnvelope.serializer(), file.readText())
-                if (isCachedAtStale(envelope.timestamp)) {
-                    file.delete()
-                    accessOrder.keys.remove(file.name)
-                }
-            }
+    /** Detects the active network and maps it to a [NetworkQualityTier]. */
+    fun currentTier(): NetworkQualityTier {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val network = cm.activeNetwork ?: return NetworkQualityTier.TWO_G
+        val caps = cm.getNetworkCapabilities(network) ?: return NetworkQualityTier.TWO_G
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkQualityTier.WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> cellularTier(caps)
+            else -> NetworkQualityTier.FOUR_G
         }
     }
 
-    /** Invalidate cache entry for a specific key, typically on manual refresh. */
-    fun invalidate(key: String) {
-        val fileName = key.sha256()
-        File(dir, fileName).delete()
-        accessOrder.keys.remove(fileName)
-    }
-
-    private fun touch(fileName: String) {
-        accessOrder[fileName] = Unit
-    }
-
-    private fun evictIfNeeded() {
-        var totalSize = dir.listFiles()?.sumOf { it.length() } ?: 0L
-        if (totalSize <= maxCacheBytes) return
-        val leastRecentlyUsed = synchronized(accessOrder) { accessOrder.keys.toList() }
-        for (fileName in leastRecentlyUsed) {
-            if (totalSize <= maxCacheBytes) break
-            val file = File(dir, fileName)
-            if (file.exists()) {
-                totalSize -= file.length()
-                file.delete()
-            }
-            accessOrder.keys.remove(fileName)
-        }
-    }
-
-    private fun encodeCachedPayload(json: String): String =
-        Base64.encodeToString(xorWithCacheKey(json.toByteArray()), Base64.NO_WRAP)
-
-    private fun decodeCachedPayload(encoded: String): String =
-        runCatching { String(xorWithCacheKey(Base64.decode(encoded, Base64.NO_WRAP))) }.getOrDefault(encoded)
-
-    private fun xorWithCacheKey(bytes: ByteArray): ByteArray {
-        val key = MessageDigest.getInstance("SHA-256")
-            .digest("${context.packageName}:offline-cache".toByteArray())
-        return ByteArray(bytes.size) { index -> (bytes[index].toInt() xor key[index % key.size].toInt()).toByte() }
-    }
-
-    private fun String.sha256(): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
-    }
-
-    companion object {
-        const val DEFAULT_MAX_CACHE_BYTES = 5L * 1024 * 1024 // 5 MB
-        const val DEFAULT_MAX_AGE_MS = 24L * 60 * 60 * 1000 // 24 hours
-        const val ENABLE_HTTP2_PUSH_CACHE = false
+    private fun cellularTier(caps: NetworkCapabilities): NetworkQualityTier = when {
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) -> NetworkQualityTier.WIFI
+        caps.linkDownstreamBandwidthKbps >= 20_000 -> NetworkQualityTier.FIVE_G
+        caps.linkDownstreamBandwidthKbps >= 2_000 -> NetworkQualityTier.FOUR_G
+        else -> NetworkQualityTier.TWO_G
     }
 }
-
-/** Tracks offline-cache access statistics for debug/support diagnostics. */
-object CacheTelemetry {
-    private val _hits = java.util.concurrent.atomic.AtomicLong(0)
-    private val _misses = java.util.concurrent.atomic.AtomicLong(0)
-    private val _staleServed = java.util.concurrent.atomic.AtomicLong(0)
-    private val _bytesWritten = java.util.concurrent.atomic.AtomicLong(0)
-
-    val hits: Long get() = _hits.get()
-    val misses: Long get() = _misses.get()
-    val staleServed: Long get() = _staleServed.get()
-    val bytesWritten: Long get() = _bytesWritten.get()
-
-    fun recordHit() { _hits.incrementAndGet() }
-    fun recordMiss() { _misses.incrementAndGet() }
-    fun recordStaleServed() { _staleServed.incrementAndGet() }
-    fun recordWrite(bytes: Long) { _bytesWritten.addAndGet(bytes.coerceAtLeast(0L)) }
-
-    fun reset() { _hits.set(0); _misses.set(0); _staleServed.set(0); _bytesWritten.set(0) }
-
-    fun snapshot() = CacheTelemetrySnapshot(hits, misses, staleServed, bytesWritten)
-}
-
-data class CacheTelemetrySnapshot(val hits: Long, val misses: Long, val staleServed: Long, val bytesWritten: Long)
 
 /**
- * Abstracted so PasskeyServiceTest can supply an in-memory fake without a real
- * Android Context / EncryptedSharedPreferences. [pushToken], [setSession], and
- * [isNearExpiry] get harmless defaults so a minimal fake only needs to implement
- * [token] and [clear] — see [EncryptedTokenProvider] for the real, persisted behavior.
+ * Resolves the effective [NetworkQualityTier] by combining the user's [QualityPreference] with the
+ * network detected by [NetworkMonitor]. Persists the preference so it survives process restarts.
  */
-interface TokenProvider {
-    var token: String?
-    var pushToken: String?
-        get() = null
-        set(_) {}
-    // #234: a push token seen (via onNewToken) but not yet confirmed registered
-    // with the server — set when registration fails after retrying, cleared
-    // once it succeeds. See PushService's retry-on-foreground.
-    var pendingPushToken: String?
-        get() = null
-        set(_) {}
-    fun setSession(authToken: AuthToken) { token = authToken.token }
-    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean = false
-    fun clear()
-}
-
 @Singleton
-class EncryptedTokenProvider @Inject constructor(
+class NetworkQualityManager @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val networkMonitor: NetworkMonitor
+) {
+    companion object {
+        private const val PREFS = "network_quality"
+        private const val KEY_PREFERENCE = "quality_preference"
+    }
+
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    /** The user's stored preference, defaulting to [QualityPreference.AUTO]. */
+    var preference: QualityPreference
+        get() = runCatching {
+            QualityPreference.valueOf(prefs.getString(KEY_PREFERENCE, null) ?: QualityPreference.AUTO.name)
+        }.getOrDefault(QualityPreference.AUTO)
+        set(value) {
+            prefs.edit().putString(KEY_PREFERENCE, value.name).apply()
+        }
+
+    /** The tier to use right now, after applying the user's preference over the detected network. */
+    fun effectiveTier(): NetworkQualityTier = preference.resolve(networkMonitor.currentTier())
+
+    /** Image quality (0-100) to request for the current effective tier. */
+    fun imageQuality(): Int = effectiveTier().imageQuality
+
+    /** API pagination limit to request for the current effective tier. */
+    fun pageSize(): Int = effectiveTier().pageSize
+}
+
+/**
+ * Sliding-window token refresh. On each successful authenticated request the session's expiry
+ * is extended, so active users are not logged out mid-session. A refresh is only attempted once
+ * per [refreshIntervalMs] (default 5 minutes) to avoid hammering the auth endpoint. If the
+ * refresh token itself has expired, the session is cleared and the caller is told to re-auth.
+ */
+@Singleton
+class TokenRefreshManager @Inject constructor(
     @ApplicationContext private val context: Context
-) : TokenProvider {
-    // ---------------------------------------------------------------------------
-    // Android token-storage accessibility review (task #122) — mirrors the
-    // documented rationale in iOS KeychainService.swift (saveToken).
-    //
-    // Which components need token access and under what conditions?
-    //
-    //   1. ApiClient (foreground)       — always running while the UI is visible;
-    //                                     device is unlocked. Any protection level works.
-    //   2. PendingActionSyncWorker (background) — WorkManager task that can run while the
-    //                                     device screen is off but the device is NOT
-    //                                     locked (WorkManager constraints use CONNECTED
-    //                                     only). The device must be unlocked for
-    //                                     EncryptedSharedPreferences backed by
-    //                                     AES256_GCM (hardware-backed key) to succeed.
-    //   3. VaultStatusWidget (AppWidget) — AppWidget update callbacks run on the main
-    //                                     process, always while the device is unlocked
-    //                                     (AppWidgets are not invoked on a locked screen
-    //                                     on Android). The token is only needed here for
-    //                                     optional authenticated refresh calls.
-    //
-    // Conclusion: unlike iOS (where BackgroundRefreshService and TTLWidget can run
-    // while the device is still locked, requiring AfterFirstUnlock), no Android
-    // component in this app needs token access while the device is locked.
-    // EncryptedSharedPreferences with AES256_GCM uses a hardware-backed key that
-    // is only available after the user has unlocked the device (equivalent to
-    // kSecAttrAccessibleWhenUnlockedThisDeviceOnly on iOS). This IS the least-
-    // privileged option that still satisfies all access requirements above — no
-    // relaxation (analogous to AfterFirstUnlock) is needed on Android.
-    //
-    // If a future component (e.g. a background sync that must run while locked)
-    // is added, revisit this decision and document the new requirement here.
-    // ---------------------------------------------------------------------------
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "ttl_auth_secure",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
-
-    override var token: String?
-        get() = prefs.getString("token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("token", value) else remove("token")
-        }.apply()
-
-    // The last FCM token this device registered with the backend, so it can be
-    // unregistered on sign-out even if Firebase doesn't hand out a fresh token then.
-    override var pushToken: String?
-        get() = prefs.getString("push_token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("push_token", value) else remove("push_token")
-        }.apply()
-
-    override var pendingPushToken: String?
-        get() = prefs.getString("pending_push_token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("pending_push_token", value) else remove("pending_push_token")
-        }.apply()
-
-    private var expiresAtEpochMillis: Long?
-        get() = prefs.getLong(KEY_EXPIRES_AT, -1L).takeIf { it >= 0 }
-        set(value) = prefs.edit().apply {
-            if (value != null) putLong(KEY_EXPIRES_AT, value) else remove(KEY_EXPIRES_AT)
-        }.apply()
-
-    // Stores both the bearer token and its expiry from an auth response, so ApiClient can
-    // proactively refresh before the backend would reject the token with a 401 — previously
-    // AuthToken.expiresAt was parsed off the wire and then never read anywhere.
-    override fun setSession(authToken: AuthToken) {
-        token = authToken.token
-        expiresAtEpochMillis = runCatching { Instant.parse(authToken.expiresAt).toEpochMilli() }.getOrNull()
+) {
+    companion object {
+        private const val TAG = "TokenRefresh"
+        const val DEFAULT_REFRESH_INTERVAL_MS = 5 * 60 * 1000L
+        private const val PREFS = "token_refresh"
+        private const val KEY_LAST_REFRESH = "last_refresh_at"
     }
 
-    override fun isNearExpiry(threshold: Duration): Boolean {
-        val expiry = expiresAtEpochMillis ?: return false
-        return Instant.now().plus(threshold).toEpochMilli() >= expiry
+    /** Minimum time between sliding-window refreshes. Configurable for tests. */
+    internal var refreshIntervalMs: Long = DEFAULT_REFRESH_INTERVAL_MS
+
+    /** How far past the current expiry a successful refresh extends the session. */
+    internal var extensionMs: Long = DEFAULT_REFRESH_INTERVAL_MS
+
+    private val prefs by lazy {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
     }
 
-    override fun clear() {
-        token = null
-        expiresAtEpochMillis = null
+    /**
+     * Called after a successful authenticated request. Extends [token]'s expiry when the sliding
+     * window allows a refresh. Returns the (possibly extended) token, or null when the refresh
+     * token has expired and the session must be re-established.
+     */
+    fun onSuccessfulRequest(token: AuthToken, now: Instant = Instant.now()): AuthToken? {
+        if (isRefreshTokenExpired(token, now)) {
+            Log.w(TAG, "Refresh token expired; clearing session")
+            clearSession()
+            return null
+        }
+        if (!shouldRefresh(now)) return token
+        val extended = extendExpiry(token, now)
+        prefs.edit().putLong(KEY_LAST_REFRESH, now.toEpochMilli()).apply()
+        return extended
     }
 
-    private companion object {
-        const val KEY_EXPIRES_AT = "expires_at_epoch_millis"
+    /** True when enough time has elapsed since the last sliding-window refresh. */
+    fun shouldRefresh(now: Instant = Instant.now()): Boolean {
+        val last = prefs.getLong(KEY_LAST_REFRESH, 0L)
+        return now.toEpochMilli() - last >= refreshIntervalMs
+    }
+
+    /** Extends the token's expiry by [extensionMs] from [now]. */
+    fun extendExpiry(token: AuthToken, now: Instant = Instant.now()): AuthToken {
+        val newExpiry = now.plusMillis(extensionMs)
+        return token.copy(expiresAt = newExpiry)
+    }
+
+    /** True when the refresh token is missing or already past its expiry. */
+    fun isRefreshTokenExpired(token: AuthToken, now: Instant = Instant.now()): Boolean {
+        val refreshExpiry = token.refreshExpiresAt ?: return false
+        return !refreshExpiry.isAfter(now)
+    }
+
+    /** Clears the sliding-window bookkeeping so the next session starts fresh. */
+    fun clearSession() {
+        prefs.edit().remove(KEY_LAST_REFRESH).apply()
     }
 }
+
+/**
+ * Validates security-relevant HTTP response headers so the app can detect header-stripping
+ * attacks (e.g. a proxy or MITM silently dropping hardening headers). Missing or invalid
+ * headers are logged via [SecurityHeaderTelemetry] and surfaced to callers as a report.
+ */
+object SecurityHeaderValidator {
+    private const val TAG = "SecurityHeaders"
+
+    const val X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
+    const val STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security"
+    const val X_FRAME_OPTIONS = "X-Frame-Options"
+
+    private val VALID_FRAME_OPTIONS = setOf("DENY", "SAMEORIGIN")
+
+    /** Result of validating a single security header. */
+    data class HeaderResult(val name: String, val valid: Boolean, val reason: String?)
+
+    /** Aggregate report for a response's security headers. */
+    data class Report(val results: List<HeaderResult>) {
+        val isValid: Boolean get() = results.all { it.valid }
+        val invalidHeaders: List<HeaderResult> get() = results.filter { !it.valid }
+    }
+
+    /**
+     * Validates the security headers on [headers]. Header lookup is case-insensitive since HTTP
+     * header names are not case-sensitive. Every missing/invalid header is logged.
+     */
+    fun validate(headers: Map<String, String>): Report {
+        val normalized = headers.entries.associate { it.key.lowercase() to it.value }
+        val results = listOf(
+            validateContentTypeOptions(normalized),
+            validateStrictTransportSecurity(normalized),
+            validateFrameOptions(normalized)
+        )
+        results.filter { !it.valid }.forEach { result ->
+            Log.w(TAG, "Invalid security header ${result.name}: ${result.reason}")
+            SecurityHeaderTelemetry.recordInvalid(result.name)
+        }
+        return Report(results)
+    }
+
+    private fun validateContentTypeOptions(headers: Map<String, String>): HeaderResult {
+        val value = headers[X_CONTENT_TYPE_OPTIONS.lowercase()]
+        return when {
+            value == null -> HeaderResult(X_CONTENT_TYPE_OPTIONS, false, "missing")
+            value.trim().equals("nosniff", ignoreCase = true) -> HeaderResult(X_CONTENT_TYPE_OPTIONS, true, null)
+            else -> HeaderResult(X_CONTENT_TYPE_OPTIONS, false, "expected 'nosniff' but was '$value'")
+        }
+    }
+
+    private fun validateStrictTransportSecurity(headers: Map<String, String>): HeaderResult {
+        val value = headers[STRICT_TRANSPORT_SECURITY.lowercase()]
+        if (value == null) return HeaderResult(STRICT_TRANSPORT_SECURITY, false, "missing")
+        val maxAge = Regex("max-age\\s*=\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .find(value)?.groupValues?.get(1)?.toLongOrNull()
+            ?: return HeaderResult(STRICT_TRANSPORT_SECURITY, false, "missing or invalid max-age")
+        return if (maxAge > 0) {
+            HeaderResult(STRICT_TRANSPORT_SECURITY, true, null)
+        } else {
+            HeaderResult(STRICT_TRANSPORT_SECURITY, false, "max-age must be greater than 0")
+        }
+    }
+
+    private fun validateFrameOptions(headers: Map<String, String>): HeaderResult {
+        val value = headers[X_FRAME_OPTIONS.lowercase()]
+        return when {
+            value == null -> HeaderResult(X_FRAME_OPTIONS, false, "missing")
+            value.trim().uppercase() in VALID_FRAME_OPTIONS -> HeaderResult(X_FRAME_OPTIONS, true, null)
+            else -> HeaderResult(X_FRAME_OPTIONS, false, "expected DENY or SAMEORIGIN but was '$value'")
+        }
+    }
+}
+
+/** Tracks counts of invalid/missing security headers for debug/support diagnostics. */
+object SecurityHeaderTelemetry {
+    private val _invalidCounts = java.util.co
+
+/* … truncated 3221 chars — edit only what you need near the top … */

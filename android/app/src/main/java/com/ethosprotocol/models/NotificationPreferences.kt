@@ -21,7 +21,13 @@ data class NotificationPreferences(
     /** Start of quiet hours (hour 0-23, local time). */
     val quietHoursStart: Int = 22,
     /** End of quiet hours (hour 0-23, local time). */
-    val quietHoursEnd: Int = 8
+    val quietHoursEnd: Int = 8,
+    /** Whether in-app notification badges are shown. */
+    val inAppBadgesEnabled: Boolean = true,
+    /** Whether the in-app notification banner is shown. */
+    val inAppBannerEnabled: Boolean = true,
+    /** Where the in-app notification banner is anchored on screen. */
+    val inAppBannerPosition: InAppBannerPosition = InAppBannerPosition.TOP
 ) {
     /**
      * Returns true if a notification should be suppressed right now based on quiet hours.
@@ -53,4 +59,15 @@ data class NotificationPreferences(
             prefs.edit().putString(KEY, json.encodeToString(preferences)).apply()
         }
     }
+}
+
+/**
+ * Anchor position for the in-app notification banner.
+ * Customizable so the banner can be placed where it does not obscure
+ * primary content on different screens.
+ */
+@Serializable
+enum class InAppBannerPosition {
+    TOP,
+    BOTTOM
 }
