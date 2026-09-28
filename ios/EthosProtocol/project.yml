@@ -26,6 +26,13 @@ name: EthosProtocol
 configs:
   Debug: debug
   Release: release
+  # Staging mirrors Release (minification on, pinning configurable) but points at
+  # the staging API endpoint. API_BASE_URL and TLS_PUBLIC_KEY_PINS are overridden
+  # per-target in the settings.configs block below. The Staging configuration uses
+  # the same underlying xcode-configuration type as Release so that it inherits all
+  # release optimisations and catches ProGuard-equivalent dead-code stripping issues
+  # before a production build is cut.
+  Staging: release
 
 settings:
   base:
@@ -77,6 +84,21 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        # Staging: point at the staging API and use a distinct bundle ID so the
+        # staging and production apps can be installed side-by-side on a device.
+        # API_BASE_URL is injected at build time via xcodebuild's
+        # `STAGING_API_BASE_URL` xcconfig/command-line override; it falls back to
+        # the staging subdomain if not supplied (so the plist is never blank).
+        # TLS pins are left empty: the staging certificate is separate from
+        # production and check_tls_pinning.py only gates the Release configuration.
+        Staging:
+          PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol.staging
+          PRODUCT_NAME: "EthosProtocol Staging"
+          # Expand from a build setting so CI can inject it without editing this file:
+          #   xcodebuild -configuration Staging STAGING_API_BASE_URL=https://...
+          # Falls back to the staging subdomain convention when not set.
+          STAGING_API_BASE_URL: "https://staging-api.ethos-protocol.app/v1"
     dependencies:
       - target: TTLWidget
         embed: true
@@ -131,6 +153,17 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: true
+      configs:
+        # Staging: distinct bundle ID to match the .staging host app suffix.
+        # TTLWidget reads API_BASE_URL from its own Info.plist (Bundle.main resolves
+        # to the extension bundle, not the host app), so the staging URL must also
+        # be set here. The Info.plist API_BASE_URL key is overridden at build time
+        # via the STAGING_API_BASE_URL xcconfig/command-line setting (same as the
+        # host app target above).
+        Staging:
+          PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol.staging.TTLWidget
+          PRODUCT_NAME: "TTLWidget Staging"
+          STAGING_API_BASE_URL: "https://staging-api.ethos-protocol.app/v1"
 
   EthosProtocolTests:
     type: bundle.unit-test

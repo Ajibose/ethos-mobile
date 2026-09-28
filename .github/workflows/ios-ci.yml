@@ -148,12 +148,27 @@ jobs:
       - name: Collect code coverage (SPM tests)
         working-directory: ios/EthosProtocol
         run: |
+          PROFDATA=$(find ~/Library/Developer/Xcode/DerivedData -name "default.profdata" -type f -print -quit 2>/dev/null || true)
+          BINARY=$(find ~/Library/Developer/Xcode/DerivedData -name "EthosProtocol" -type f -print -quit 2>/dev/null || true)
+
+          if [ -z "$PROFDATA" ] || [ -z "$BINARY" ]; then
+            echo "::warning::Code coverage data collection skipped (profdata or binary not found)"
+            exit 0
+          fi
+
+          xcrun llvm-cov export \
+            -ignore-filename-regex=".build" \
+            -format=lcov \
+            -instr-profile="$PROFDATA" \
+            "$BINARY" \
+            > coverage.lcov 2>/dev/null
+
           xcrun llvm-cov export \
             -ignore-filename-regex=".build" \
             -json \
-            -instr-profile="$(find ~/Library/Developer/Xcode/DerivedData -name "default.profdata" -type f -print -quit)" \
-            "$(find ~/Library/Developer/Xcode/DerivedData -name "EthosProtocol" -type f -print -quit)" \
-            > coverage.json 2>/dev/null || echo "::warning::Code coverage data collection skipped (profdata not found)"
+            -instr-profile="$PROFDATA" \
+            "$BINARY" \
+            > coverage.json 2>/dev/null
 
       - name: Check code coverage threshold (40% minimum for SPM)
         working-directory: ios/EthosProtocol
@@ -162,19 +177,41 @@ jobs:
           import json
           import sys
 
+          THRESHOLD = 40
+
           try:
               with open('coverage.json', 'r') as f:
                   data = json.load(f)
-                  if 'data' in data and len(data['data']) > 0:
-                      coverage = data['data'][0].get('totals', {}).get('lines', {}).get('percent', 0)
-                      print(f"SPM code coverage: {coverage:.1f}%")
-                      if coverage < 40:
-                          print(f"::warning::Code coverage ({coverage:.1f}%) is below 40% threshold. Please add tests.")
-                      else:
-                          print(f"✓ Code coverage meets minimum threshold (40%)")
-          except (FileNotFoundError, json.JSONDecodeError, KeyError):
-              print("::info::Code coverage data not available (profdata or coverage.json missing)")
+          except FileNotFoundError:
+              print("::warning::coverage.json not found — coverage check skipped (profdata unavailable on this runner)")
+              sys.exit(0)
+          except json.JSONDecodeError as e:
+              print(f"::error::Failed to parse coverage.json: {e}")
+              sys.exit(1)
+
+          try:
+              coverage = data['data'][0]['totals']['lines']['percent']
+          except (KeyError, IndexError):
+              print("::warning::Unexpected coverage.json structure — check skipped")
+              sys.exit(0)
+
+          print(f"iOS SPM code coverage: {coverage:.1f}%")
+          if coverage < THRESHOLD:
+              print(f"::error::Code coverage ({coverage:.1f}%) is below the {THRESHOLD}% minimum threshold. Please add tests.")
+              sys.exit(1)
+          else:
+              print(f"✓ Code coverage meets minimum threshold ({THRESHOLD}%)")
           EOF
+
+      - name: Upload iOS coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: ios/EthosProtocol/coverage.lcov
+          flags: ios
+          name: ios-spm
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Assert VaultWebSocketClient stub is gone (#179)
         # Fails the build if any Swift source file still references the deleted

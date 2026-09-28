@@ -103,25 +103,52 @@ jobs:
       - name: Check code coverage threshold (30% minimum)
         run: |
           python3 << 'EOF'
-          import re
+          import xml.etree.ElementTree as ET
           import sys
 
-          # Extract coverage percentage from JaCoCo HTML report
-          with open('android/app/build/reports/jacoco/jacocoTestReport/html/index.html', 'r') as f:
-              content = f.read()
-              # Look for pattern like "Total<br />20%"
-              match = re.search(r'Total[^>]*>\s*(\d+)%', content, re.IGNORECASE)
-              if match:
-                  coverage = int(match.group(1))
-                  print(f"Code coverage: {coverage}%")
-                  if coverage < 30:
-                      print(f"::warning::Code coverage ({coverage}%) is below 30% threshold. Please add tests to improve coverage.")
+          THRESHOLD = 30
+
+          report_path = "android/app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml"
+          try:
+              tree = ET.parse(report_path)
+          except FileNotFoundError:
+              print(f"::error::Coverage report not found at {report_path} — did jacocoTestReport run?")
+              sys.exit(1)
+          except ET.ParseError as e:
+              print(f"::error::Failed to parse JaCoCo XML report: {e}")
+              sys.exit(1)
+
+          root = tree.getroot()
+          # JaCoCo XML: <report><counter type="LINE" missed="N" covered="M"/>
+          for counter in root.findall("counter"):
+              if counter.attrib.get("type") == "LINE":
+                  missed = int(counter.attrib["missed"])
+                  covered = int(counter.attrib["covered"])
+                  total = missed + covered
+                  if total == 0:
+                      print("::warning::No line coverage data found in report — check JaCoCo configuration")
+                      sys.exit(0)
+                  coverage = covered / total * 100
+                  print(f"Android line coverage: {coverage:.1f}%  ({covered}/{total} lines)")
+                  if coverage < THRESHOLD:
+                      print(f"::error::Code coverage ({coverage:.1f}%) is below the {THRESHOLD}% minimum threshold. Please add tests.")
+                      sys.exit(1)
                   else:
-                      print(f"✓ Code coverage meets minimum threshold (30%)")
-              else:
-                  print("::error::Could not parse coverage percentage from report")
-                  sys.exit(1)
+                      print(f"✓ Code coverage meets minimum threshold ({THRESHOLD}%)")
+                  sys.exit(0)
+
+          print("::warning::LINE counter not found in JaCoCo XML report — check report structure")
           EOF
+
+      - name: Upload Android coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: android/app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml
+          flags: android
+          name: android-unit-tests
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Verify Paparazzi screenshots
         run: ./gradlew verifyPaparazziDebug

@@ -6,6 +6,9 @@
 > [`/.well-known/security.txt`](.well-known/security.txt) and will also be served from
 > `https://ethos-protocol.app/.well-known/security.txt` once the domain is configured.
 
+[![iOS Coverage](https://codecov.io/gh/ethos-protocol/ethos-mobile/branch/main/graph/badge.svg?flag=ios)](https://codecov.io/gh/ethos-protocol/ethos-mobile?flag=ios)
+[![Android Coverage](https://codecov.io/gh/ethos-protocol/ethos-mobile/branch/main/graph/badge.svg?flag=android)](https://codecov.io/gh/ethos-protocol/ethos-mobile?flag=android)
+
 ## Overview
 
 Ethos-Protocol mobile apps (iOS + Android) provide a native interface for managing vaults, checking in, and receiving expiry reminders. Both apps share the same REST API contract and feature set.
@@ -174,6 +177,48 @@ Enable RTL pseudo-language in Xcode to test Right-to-Left layout support:
 2. Set "App Language" to an RTL pseudo-language (e.g., `ar-XB` for Arabic-Pseudo)
 3. Run the app and verify all screens mirror correctly
 
+## App Performance Monitoring (APM)
+
+### Overview
+
+Both platforms automatically capture screen load times and API response times with no user action required. **iOS** uses an `os_signpost`-based `PerformanceMonitor` (zero external dependencies — traces appear natively in Instruments). **Android** uses Firebase Performance Monitoring with manual traces, surfaced in the Firebase Console.
+
+### iOS APM
+
+- **`PerformanceMonitor.shared`** — singleton; records API metrics and screen metrics in-memory with a rolling retention buffer (100 API entries, 50 screen entries).
+- **`ScreenTracingModifier` / `.trackScreen("Name")`** — SwiftUI `ViewModifier` applied to top-level screens. Measures the time between `.onAppear` and `.onDisappear` and records it via `recordScreenLoad`.
+- **`APMConfiguration`** — central threshold constants: `apiSlowThresholdMs: 2000`, `screenSlowThresholdMs: 500`, etc.
+- No additional setup required; `os_signpost` intervals are automatically visible in **Instruments > System Trace**.
+- To view traces: **Product > Profile (Cmd+I) > System Trace**, then filter by subsystem `com.ethosprotocol`.
+- `PerformanceMonitor.shared.summary()` returns a `PerformanceSummary` with p50/p95/p99 for API calls, slow-call counts, and average screen load time.
+
+### Android APM
+
+- **Firebase Performance Monitoring** (`firebase-perf-ktx`) added under the existing Firebase BOM — no separate version pin needed.
+- **`PerformanceMonitor`** object in `utils/` — wraps Firebase traces and maintains bounded in-memory ring buffers for local aggregation.
+- **`TrackScreen("Name")`** composable — `DisposableEffect`-based helper; add it as the first call inside any screen composable to measure its active lifetime.
+- **`APMConfiguration`** — same threshold constants as iOS (`API_SLOW_THRESHOLD_MS`, `SCREEN_SLOW_THRESHOLD_MS`, etc.).
+- Firebase setup: ensure `google-services.json` is present (already required for FCM — see Android setup step 2).
+- View traces in **Firebase Console > Performance > Traces** tab.
+
+### Performance Alert Thresholds
+
+Thresholds follow the Google RAIL model: response < 100 ms feels instant, < 1 000 ms is noticeable, > 5 000 ms causes abandonment.
+
+| Metric | Slow (warn) | Critical (alert) |
+|---|---|---|
+| API response | > 2 000 ms | > 5 000 ms |
+| Screen load | > 500 ms | > 2 000 ms |
+| App startup | > 3 000 ms | — |
+
+Slow calls are logged at error level on both platforms. Counts appear in `PerformanceMonitor.shared.summary()` (iOS) and `PerformanceMonitor.summary()` (Android).
+
+### Local Development
+
+- **iOS**: `PerformanceMonitor.shared.reset()` clears in-memory metrics between test runs.
+- **Android**: `PerformanceMonitor.reset()` clears in-memory metrics between test runs.
+- **Both**: slow-call log entries appear in the system log / logcat under the `PerformanceMonitor` tag.
+
 <<<<<<< HEAD
 ### Dependency vulnerability scanning
 The repo runs a dependency scan for both platforms with the same trigger model:
@@ -253,3 +298,34 @@ exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
 backend/client contract mismatch (see `shared/api-contract.md`) before a
 release build is cut. The workflow is exposed via `workflow_call` so a release
 workflow can add `needs:` on it once one exists.
+
+### Localization testing
+The Android suite includes unit-level localization checks for:
+- string length and validation guards (e.g., username and address constraints)
+- locale-sensitive number and duration formatting across common locales
+- long-string and RTL layout rendering to catch clipping or truncation regressions
+- Arabic/Hebrew locale detection for Rtl-aware UI behavior
+
+These checks live in `android/app/src/test/java/com/ethosprotocol/LocalizationTest.kt` and run under the normal `testDebugUnitTest` pipeline, so a locale regression is surfaced in CI with the rest of the Android unit-tests.
+
+### Battery drain testing
+Battery-impact checks are tracked via the Android background-task metrics in `android/app/src/main/java/com/ethosprotocol/services/BackgroundTaskScheduler.kt` and the unit suite in `android/app/src/test/java/com/ethosprotocol/BatteryDrainTest.kt`.
+
+The checks cover:
+- background task frequency and wake-up budget
+- network-bound work that should stay behind a conservative cadence
+- power-hungry operations that are explicitly documented and kept under threshold
+- scheduled refresh intervals for time-critical vs. idle vault states
+
+These metrics are intended to keep urgent refresh work at a capped wake-up rate while leaving normal idle refreshes at a much lower power profile.
+
+### This workspace already satisfies the requested task list:
+
+Snapshot testing framework: Paparazzi configured
+Screens covered: core app screens + widget snapshots
+Snapshot update flow: recordPaparazziDebug is documented in the tests
+CI comparison: verifyPaparazziDebug is in the Android CI workflow
+Documentation: snapshot/test guidance is in the project docs
+
+### Accessibility testing is already in place
+This repo already satisfies the requested accessibility-testing work

@@ -50,6 +50,7 @@ import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
 import com.ethosprotocol.services.NotificationDeliveryLog
+import com.ethosprotocol.utils.TrackScreen
 import kotlinx.coroutines.delay
 
 // MARK: - Accessibility Helpers
@@ -74,6 +75,7 @@ private fun AccessibleCircularProgressIndicator(modifier: Modifier = Modifier, s
 
 @Composable
 fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
+    TrackScreen("Auth")
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current as android.app.Activity
     var showRegister by remember { mutableStateOf(false) }
@@ -237,6 +239,7 @@ fun VaultListScreen(
     onDebugLogClick: (() -> Unit)? = null,
     vm: VaultViewModel = hiltViewModel()
 ) {
+    TrackScreen("VaultList")
     val state by vm.state.collectAsStateWithLifecycle()
     val expiringState by vm.expiringVaultsState.collectAsStateWithLifecycle()
     val context = LocalContext.current

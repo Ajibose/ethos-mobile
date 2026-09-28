@@ -358,6 +358,7 @@ struct AuthView: View {
             .sheet(isPresented: $showRegister) { RegisterView() }
             .sheet(isPresented: $showRecovery) { RecoverAccessView() }
         }
+        .trackScreen("Auth")
     }
 }
 
@@ -615,6 +616,7 @@ struct VaultListView: View {
                 Text("This device appears to be jailbroken. Your vault data, passkeys, and 2FA secrets may be at greater risk. Consider using a stock device for maximum security.")
             }
         }
+        .trackScreen("VaultList")
     }
 
     // Surfaces staleness (issue #25) and any check-ins still waiting to sync (issue #28) above
@@ -978,6 +980,7 @@ struct VaultDetailView: View {
         .sheet(isPresented: $showNotificationPreferences) {
             NavigationStack { VaultNotificationPreferencesView(vaultID: vault.id) }
         }
+        .trackScreen("VaultDetail")
     }
 
     private func load2FAStatus() async {
