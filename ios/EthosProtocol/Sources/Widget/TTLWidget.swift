@@ -62,6 +62,29 @@ struct VaultEntry: TimelineEntry {
     let isExpiringSoon: Bool
     let balance: String
     let beneficiary: String
+    /// #435: True when the last data fetch failed — widget shows an error indicator
+    /// and a tap-to-open-app affordance so the user can force a refresh.
+    let hasError: Bool
+
+    init(
+        date: Date,
+        vaultID: String,
+        vaultName: String,
+        ttlRemaining: UInt64?,
+        isExpiringSoon: Bool,
+        balance: String = "—",
+        beneficiary: String = "—",
+        hasError: Bool = false
+    ) {
+        self.date = date
+        self.vaultID = vaultID
+        self.vaultName = vaultName
+        self.ttlRemaining = ttlRemaining
+        self.isExpiringSoon = isExpiringSoon
+        self.balance = balance
+        self.beneficiary = beneficiary
+        self.hasError = hasError
+    }
 }
 
 // MARK: - Timeline Provider
@@ -140,7 +163,8 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
                 ttlRemaining: nil,
                 isExpiringSoon: false,
                 balance: "—",
-                beneficiary: "—"
+                beneficiary: "—",
+                hasError: true  // #435: show error indicator in widget
             )
         }
 
@@ -190,6 +214,31 @@ struct TTLWidgetView: View {
         colorScheme == .dark ? .cyan : .blue
     }
 
+    // MARK: #435 — Error banner
+    /// Shown at the top of every size variant when `entry.hasError == true`.
+    /// The widget URL (tap-to-open-app) doubles as the tap-to-retry affordance —
+    /// opening the app lets the user trigger a manual refresh which reloads the timeline.
+    @ViewBuilder
+    private var errorBanner: some View {
+        if entry.hasError {
+            Label {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(LocalizedStrings.widgetErrorTitle)
+                        .font(.caption2.bold())
+                    Text(LocalizedStrings.widgetErrorMessage)
+                        .font(.caption2)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .foregroundStyle(.red)
+            }
+            .font(.caption2)
+            .foregroundStyle(.red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Sync failed. Tap to retry.")
+        }
+    }
+
     var body: some View {
         switch family {
         case .systemSmall:
@@ -208,6 +257,7 @@ struct TTLWidgetView: View {
     // MARK: .systemSmall — vault name + TTL countdown only
     private var smallView: some View {
         VStack(alignment: .leading, spacing: 4) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -248,6 +298,7 @@ struct TTLWidgetView: View {
     // MARK: .systemMedium — TTL + balance + quick check-in
     private var mediumView: some View {
         VStack(alignment: .leading, spacing: 6) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -293,6 +344,7 @@ struct TTLWidgetView: View {
     // MARK: .systemLarge — TTL + balance + beneficiary + quick check-in
     private var largeView: some View {
         VStack(alignment: .leading, spacing: 8) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -359,6 +411,7 @@ struct TTLWidgetView: View {
     // MARK: .accessoryRectangular / .accessoryCircular — compact lock-screen view with quick action
     private var compactView: some View {
         VStack(alignment: .leading, spacing: 4) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)

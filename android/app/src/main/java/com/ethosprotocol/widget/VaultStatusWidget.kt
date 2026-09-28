@@ -59,6 +59,8 @@ class VaultStatusWidget : AppWidgetProvider() {
         private const val KEY_LAST_CHECK_IN = "last_check_in"
         const val KEY_BALANCE = "balance"
         const val KEY_BENEFICIARY = "beneficiary"
+        // #435: persists whether the last refresh attempt failed
+        private const val KEY_HAS_ERROR = "has_error"
 
         // Selected-vault key stored in per-widget prefs; written by VaultWidgetConfigActivity.
         private const val KEY_SELECTED_VAULT_ID = "selected_vault_id"
@@ -75,7 +77,8 @@ class VaultStatusWidget : AppWidgetProvider() {
             ttlRemaining: String,
             lastCheckIn: String,
             balance: String,
-            beneficiary: String
+            beneficiary: String,
+            hasError: Boolean = false  // #435
         ) {
             context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
                 .putString(KEY_VAULT_ID, vaultId)
@@ -84,6 +87,7 @@ class VaultStatusWidget : AppWidgetProvider() {
                 .putString(KEY_LAST_CHECK_IN, lastCheckIn)
                 .putString(KEY_BALANCE, balance)
                 .putString(KEY_BENEFICIARY, beneficiary)
+                .putBoolean(KEY_HAS_ERROR, hasError)  // #435
                 .apply()
         }
 
@@ -133,6 +137,7 @@ class VaultStatusWidget : AppWidgetProvider() {
             val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, context.getString(R.string.widget_last_checkin_never)) ?: context.getString(R.string.widget_last_checkin_never)
             val balance = prefs.getString(KEY_BALANCE, "—") ?: "—"
             val beneficiary = prefs.getString(KEY_BENEFICIARY, "—") ?: "—"
+            val hasError = prefs.getBoolean(KEY_HAS_ERROR, false)  // #435
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -140,6 +145,7 @@ class VaultStatusWidget : AppWidgetProvider() {
                     data = Uri.parse(deepLinkUri(vaultId))
                 }
             }
+
             val pendingIntent = PendingIntent.getActivity(
                 context, widgetId, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -181,6 +187,13 @@ class VaultStatusWidget : AppWidgetProvider() {
                 setTextViewText(R.id.widget_balance, balance)
                 setTextViewText(R.id.widget_beneficiary, beneficiary)
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
+
+                // #435: Show/hide the error indicator based on last sync result.
+                // widget_error_indicator is declared GONE by default in vault_widget.xml.
+                setViewVisibility(
+                    R.id.widget_error_indicator,
+                    if (hasError) android.view.View.VISIBLE else android.view.View.GONE
+                )
 
                 // #439: If vault_widget.xml does NOT yet have a res/layout-night/ variant,
                 // apply programmatic dark/light overrides here.  These mirror the colours in
@@ -285,7 +298,8 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                     ttlRemaining = formatTtl(applicationContext, vault.ttlRemaining),
                     lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn, applicationContext),
                     balance = vault.formattedBalance,
-                    beneficiary = vault.beneficiary.take(12) + "…"
+                    beneficiary = vault.beneficiary.take(12) + "…",
+                    hasError = false  // #435: clear error state on successful refresh
                 )
                 VaultStatusWidget.updateWidget(applicationContext, manager, widgetId)
             }
@@ -300,6 +314,20 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 else -> result::class.simpleName ?: "Unknown error"
             }
             WidgetErrorLogger.logLoadFailure(reason)
+
+            // #435: Mark all widget instances as having an error so the error indicator
+            // is displayed until the next successful refresh.
+            val manager = AppWidgetManager.getInstance(applicationContext)
+            val ids = manager.getAppWidgetIds(
+                ComponentName(applicationContext, VaultStatusWidget::class.java)
+            )
+            ids.forEach { widgetId ->
+                val prefs = applicationContext.getSharedPreferences(
+                    "vault_widget_prefs_$widgetId", android.content.Context.MODE_PRIVATE
+                )
+                prefs.edit().putBoolean("has_error", true).apply()
+                VaultStatusWidget.updateWidget(applicationContext, manager, widgetId)
+            }
         }
         return Result.success()
     }

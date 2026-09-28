@@ -64,6 +64,10 @@ struct LocalizedStrings {
         return String(format: NSLocalizedString("%dh remaining", comment: "Duration format with hours only"), hours)
     }
 
+    // MARK: - Widget Error State (#435)
+    static let widgetErrorTitle = NSLocalizedString("Sync Failed", comment: "Widget error state title shown when data fetch fails")
+    static let widgetErrorMessage = NSLocalizedString("Tap to retry", comment: "Widget error state prompt shown below error title")
+
     // MARK: - Check-in Action
     static let checkInAction = NSLocalizedString("Check In", comment: "Notification action to check in")
 }
