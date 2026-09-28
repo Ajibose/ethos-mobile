@@ -1,0 +1,181 @@
+name: Staging Deploy
+
+# Builds both platforms in their Staging configuration and runs the smoke test
+# against the staging API before any release build is cut.
+#
+# Triggers:
+#   - Push to main (catch regressions continuously against staging)
+#   - Manual dispatch (for on-demand staging validation or after a backend deploy)
+#   - workflow_call (so a future release workflow can gate on this with `needs:`)
+#
+# Required secrets:
+#   STAGING_API_BASE_URL     — e.g. https://staging-api.ethos-protocol.app/v1
+#   STAGING_SMOKE_TOKEN      — long-lived JWT for the dedicated smoke-test account
+#   STAGING_SMOKE_VAULT_ID   — vault ID owned by that account, safe to check-in repeatedly
+#
+# Optional secrets (cert pinning — leave unset to disable pinning on staging):
+#   ETHOS_STAGING_CERT_PINS  — comma-separated Base64 SPKI SHA-256 hashes for the
+#                              staging TLS certificate (same format as ETHOS_CERT_PINS)
+#
+# Optional vars (iOS staging API URL override):
+#   STAGING_API_BASE_URL     — falls back to https://staging-api.ethos-protocol.app/v1
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      STAGING_API_BASE_URL:
+        required: true
+      STAGING_SMOKE_TOKEN:
+        required: true
+      STAGING_SMOKE_VAULT_ID:
+        required: true
+      ETHOS_STAGING_CERT_PINS:
+        required: false
+
+jobs:
+  # ── Android staging build ─────────────────────────────────────────────────
+  android-staging-build:
+    name: Build Android (Staging)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run unit tests (debug variant — staging shares same source set)
+        run: ./gradlew testDebugUnitTest
+
+      # assembleStaging produces a Staging-flavoured APK pointing at the staging API.
+      # STAGING_API_BASE_URL and ETHOS_STAGING_CERT_PINS are read in build.gradle.kts
+      # via System.getenv() and baked into BuildConfig at compile time.
+      - name: Assemble staging APK
+        env:
+          STAGING_API_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
+          ETHOS_STAGING_CERT_PINS: ${{ secrets.ETHOS_STAGING_CERT_PINS }}
+        run: ./gradlew assembleStaging
+
+      - name: Verify staging APK was produced
+        run: |
+          APK=$(find app/build/outputs/apk/staging -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::Staging APK not found — assembleStaging may have failed silently"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$APK")
+          echo "Staging APK: $APK ($(numfmt --to=iec $SIZE))"
+
+      - name: Upload staging APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-staging-apk
+          path: android/app/build/outputs/apk/staging/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── iOS staging build ─────────────────────────────────────────────────────
+  ios-staging-build:
+    name: Build iOS (Staging)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve package dependencies
+        run: xcodebuild -resolvePackageDependencies
+
+      - name: Select iOS Simulator destination
+        id: simulator
+        run: |
+          SIMULATOR=$(xcrun simctl list devices available \
+            | sed -n '/^-- iOS/,$p' \
+            | grep -E '^ +iPhone' \
+            | tail -1)
+          UDID=$(echo "$SIMULATOR" | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator found on this runner image."
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $SIMULATOR"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The Staging configuration is defined in project.yml. The Xcode/ directory
+      # must exist before xcodegen generates the project into it.
+      - name: Generate Xcode project (XcodeGen)
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
+
+      # Build the Staging configuration for the iOS Simulator. This exercises the
+      # same code paths as a real staging build but doesn't require distribution
+      # signing. STAGING_API_BASE_URL is injected as a build setting so the
+      # Info.plist API_BASE_URL key is overwritten at compile time without editing
+      # source files.
+      - name: Build app (Staging, iOS Simulator)
+        env:
+          STAGING_API_BASE_URL: ${{ secrets.STAGING_API_BASE_URL || 'https://staging-api.ethos-protocol.app/v1' }}
+        run: |
+          xcodebuild build \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -configuration Staging \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipMacroValidation \
+            STAGING_API_BASE_URL="$STAGING_API_BASE_URL"
+
+      - name: Verify staging app was produced
+        run: |
+          APP=$(find ~/Library/Developer/Xcode/DerivedData \
+            -name "EthosProtocol.app" -type d \
+            -path "*/Build/Products/Staging-iphonesimulator/*" \
+            2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            echo "::warning::Could not locate Staging .app in DerivedData — build may have succeeded but output path differs"
+          else
+            echo "Staging .app: $APP"
+          fi
+
+  # ── Staging smoke test ────────────────────────────────────────────────────
+  # Runs only after both platform builds pass, so a broken build never hides a
+  # contract failure and a contract failure is clearly distinguished from a build
+  # failure in the PR checks list.
+  smoke-test:
+    name: Smoke test staging API
+    needs: [android-staging-build, ios-staging-build]
+    uses: ./.github/workflows/staging-smoke-test.yml
+    secrets:
+      STAGING_API_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
+      STAGING_SMOKE_TOKEN: ${{ secrets.STAGING_SMOKE_TOKEN }}
+      STAGING_SMOKE_VAULT_ID: ${{ secrets.STAGING_SMOKE_VAULT_ID }}

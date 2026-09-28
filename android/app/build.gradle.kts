@@ -117,6 +117,40 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+
+        // Staging build type: points at the staging API, keeps minification on for
+        // parity with Release (catches ProGuard regressions early), but pins are
+        // supplied separately via ETHOS_STAGING_CERT_PINS so the staging certificate
+        // can rotate independently of production. App ID suffix (.staging) lets the
+        // staging and production APKs coexist on the same device.
+        create("staging") {
+            initWith(getByName("release"))
+            // Override API base URL to point at the staging backend.
+            // Supplied at build time via STAGING_API_BASE_URL env var so it never
+            // needs to be hardcoded here (CI injects it; local developers override
+            // via ~/.gradle/gradle.properties: ethos.stagingApiBaseUrl=...).
+            val stagingApiUrl = System.getenv("STAGING_API_BASE_URL")?.takeIf { it.isNotBlank() }
+                ?: (project.findProperty("ethos.stagingApiBaseUrl") as String?)?.takeIf { it.isNotBlank() }
+                ?: "https://staging-api.ethos-protocol.app/v1"
+            buildConfigField("String", "API_BASE_URL", "\"$stagingApiUrl\"")
+
+            // Staging cert pins: empty → pinning disabled (safe for staging; staging
+            // cert is separate from production and may rotate frequently during testing).
+            val stagingCertPins = System.getenv("ETHOS_STAGING_CERT_PINS")?.takeIf { it.isNotBlank() }
+                ?: (project.findProperty("ethos.stagingCertPins") as String?)?.takeIf { it.isNotBlank() }
+                ?: ""
+            buildConfigField("String", "CERT_PINS", "\"$stagingCertPins\"")
+
+            // Distinct application ID so the staging APK can be installed alongside
+            // the production app on the same device for side-by-side testing.
+            applicationIdSuffix = ".staging"
+            versionNameSuffix = "-staging"
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Staging builds are not signed for distribution (CI just verifies the APK
+            // builds cleanly); add a signingConfig here when distributing via Firebase
+            // App Distribution or a similar staging distribution channel.
+        }
     }
 
     compileOptions {
