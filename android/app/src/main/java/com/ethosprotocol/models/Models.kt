@@ -1,10 +1,12 @@
 package com.ethosprotocol.models
 
+import androidx.annotation.Keep
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.text.NumberFormat
 import java.util.Locale
 
+@Keep
 @Serializable
 data class Vault(
     val id: String,
@@ -68,15 +70,18 @@ data class DestructiveConfirmation(
     }
 }
 
+@Keep
 @Serializable
 data class VaultEvent(
     val type: String,
     val vault: Vault? = null
 )
 
+@Keep
 @Serializable
 enum class VaultStatus { active, expired, released, paused }
 
+@Keep
 @Serializable
 data class AuthChallenge(
     val challenge: String,
@@ -84,27 +89,32 @@ data class AuthChallenge(
     @SerialName("existing_credential_ids") val existingCredentialIds: List<String> = emptyList()
 )
 
+@Keep
 @Serializable
 data class AuthToken(
     val token: String,
     @SerialName("expires_at") val expiresAt: String
 )
 
+@Keep
 @Serializable
 data class CreateVaultRequest(
     val beneficiary: String,
     @SerialName("check_in_interval") val checkInInterval: Long
 )
 
+@Keep
 @Serializable
 data class BeneficiaryUpdateRequest(val beneficiary: String)
 
+@Keep
 @Serializable
 data class PushRegistration(
     val token: String,
     val platform: String = "android"
 )
 
+@Keep
 @Serializable
 data class PasskeyVerifyRequest(
     @SerialName("credential_id") val credentialId: String,
@@ -112,6 +122,7 @@ data class PasskeyVerifyRequest(
     val signature: String
 )
 
+@Keep
 @Serializable
 data class PasskeyRegisterRequest(
     @SerialName("credential_id") val credentialId: String,
@@ -128,15 +139,18 @@ data class PasskeyRegisterRequest(
 // verified email, complete() links a newly-created passkey to that existing account once
 // the recovery token proves the requester received that code.
 
+@Keep
 @Serializable
 data class RecoveryInitiateRequest(val username: String)
 
+@Keep
 @Serializable
 data class RecoveryInitiateResponse(
     @SerialName("recovery_token") val recoveryToken: String,
     @SerialName("expires_at") val expiresAt: String
 )
 
+@Keep
 @Serializable
 data class RecoveryCompleteRequest(
     @SerialName("recovery_token") val recoveryToken: String,
@@ -147,6 +161,7 @@ data class RecoveryCompleteRequest(
 
 // MARK: - 2FA Models
 
+@Keep
 @Serializable
 enum class TwoFactorMethod { totp, sms, email }
 
@@ -155,6 +170,7 @@ enum class TwoFactorMethod { totp, sms, email }
  * Clients must filter the method-selection UI to only what is listed here.
  * Decoded defensively: absent field (older server) defaults to all three methods.
  */
+@Keep
 @Serializable
 data class TwoFactorStatus(
     @SerialName("vault_id") val vaultId: String,
@@ -167,6 +183,7 @@ data class TwoFactorStatus(
     @SerialName("available_methods") val availableMethods: List<TwoFactorMethod> = TwoFactorMethod.values().toList()
 )
 
+@Keep
 @Serializable
 data class Enable2FARequest(
     val method: TwoFactorMethod,
@@ -174,6 +191,7 @@ data class Enable2FARequest(
     val email: String? = null
 )
 
+@Keep
 @Serializable
 data class Enable2FAResponse(
     @SerialName("vault_id") val vaultId: String,
@@ -183,6 +201,7 @@ data class Enable2FAResponse(
 )
 
 /** #226: `trustDevice` opt-in — when true the server issues a device trust token valid 30 days. */
+@Keep
 @Serializable
 data class Verify2FARequest(
     val otp: String,
@@ -190,6 +209,7 @@ data class Verify2FARequest(
 )
 
 /** #226: Response after verify; carries optional device trust token when opt-in was true. */
+@Keep
 @Serializable
 data class Verify2FAResponse(
     @SerialName("device_trust_token") val deviceTrustToken: String? = null,
@@ -198,9 +218,11 @@ data class Verify2FAResponse(
 
 // MARK: - #226 Trusted-Device Models
 
+@Keep
 @Serializable
 data class TrustDeviceRequest(@SerialName("trust_device") val trustDevice: Boolean = true)
 
+@Keep
 @Serializable
 data class TrustDeviceResponse(
     @SerialName("device_trust_token") val deviceTrustToken: String,
@@ -209,12 +231,14 @@ data class TrustDeviceResponse(
 
 // MARK: - #224 Backup Codes Models
 
+@Keep
 @Serializable
 data class BackupCodesResponse(
     val codes: List<String>,
     @SerialName("generated_at") val generatedAt: String
 )
 
+@Keep
 @Serializable
 data class BackupCodesStatus(
     val generated: Boolean,
@@ -223,6 +247,7 @@ data class BackupCodesStatus(
 
 // MARK: - #225 Switch 2FA Method Models
 
+@Keep
 @Serializable
 data class Switch2FARequest(
     @SerialName("new_method") val newMethod: TwoFactorMethod,
@@ -233,6 +258,7 @@ data class Switch2FARequest(
 // #109: Beneficiary acceptance request body.
 // The token is parsed from the accept deep-link URL query parameter and is
 // required by the server to authorise acceptance. See api-contract.md §POST /vaults/{id}/accept.
+@Keep
 @Serializable
 data class BeneficiaryAcceptRequest(
     @SerialName("vault_id") val vaultId: String,
@@ -240,6 +266,7 @@ data class BeneficiaryAcceptRequest(
 )
 
 // #112: Paginated vault list response. See api-contract.md §Pagination.
+@Keep
 @Serializable
 data class VaultPage(
     val vaults: List<Vault>,

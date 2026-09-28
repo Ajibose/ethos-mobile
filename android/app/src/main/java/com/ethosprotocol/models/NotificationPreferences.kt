@@ -1,6 +1,7 @@
 package com.ethosprotocol.models
 
 import android.content.Context
+import androidx.annotation.Keep
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Calendar
@@ -10,6 +11,7 @@ import java.util.Calendar
  * Persisted to SharedPreferences and synced server-side on change so
  * preferences survive reinstall.
  */
+@Keep
 @Serializable
 data class NotificationPreferences(
     /** Whether TTL-expiry warning notifications are enabled. */
