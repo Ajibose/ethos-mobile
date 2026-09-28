@@ -254,6 +254,15 @@ backend/client contract mismatch (see `shared/api-contract.md`) before a
 release build is cut. The workflow is exposed via `workflow_call` so a release
 workflow can add `needs:` on it once one exists.
 
+### Localization testing
+The Android suite includes unit-level localization checks for:
+- string length and validation guards (e.g., username and address constraints)
+- locale-sensitive number and duration formatting across common locales
+- long-string and RTL layout rendering to catch clipping or truncation regressions
+- Arabic/Hebrew locale detection for Rtl-aware UI behavior
+
+These checks live in `android/app/src/test/java/com/ethosprotocol/LocalizationTest.kt` and run under the normal `testDebugUnitTest` pipeline, so a locale regression is surfaced in CI with the rest of the Android unit-tests.
+
 ### This workspace already satisfies the requested task list:
 
 Snapshot testing framework: Paparazzi configured
