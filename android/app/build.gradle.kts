@@ -45,6 +45,11 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        // Enable multidex to support large dependency trees that exceed the 64K method
+        // reference limit per dex file (#430). minSdk = 28 (API 28+) means the platform
+        // provides native multidex support — no legacy androidx.multidex library or
+        // MultiDexApplication subclass is required.
+        multiDexEnabled = true
         buildConfigField("String", "API_BASE_URL", "\"https://api.ethos-protocol.app/v1\"")
         // Empty by default: an empty pin set disables pinning, which is what debug builds
         // pointing at a local/dev host want. Only the release build type is gated (#173).

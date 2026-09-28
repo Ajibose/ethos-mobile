@@ -10,6 +10,11 @@ import com.ethosprotocol.widget.VaultWidgetUpdateWorker
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
+// Multidex (#430): minSdk = 28 (API 28+) means the Android platform handles multiple dex
+// files natively. No MultiDexApplication subclass or MultiDex.install() call is needed —
+// the legacy androidx.multidex support library is only required for minSdk < 21. Enabling
+// multiDexEnabled = true in build.gradle.kts is sufficient; the runtime loader takes care
+// of the rest automatically before Application.onCreate() runs.
 @HiltAndroidApp
 class EthosProtocolApplication : Application(), Configuration.Provider {
 
