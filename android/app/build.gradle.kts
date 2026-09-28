@@ -26,6 +26,14 @@ val releaseCertPins = System.getenv("ETHOS_CERT_PINS")?.takeIf { it.isNotBlank()
     ?: (project.findProperty("ethos.certPins") as String?)?.takeIf { it.isNotBlank() }
     ?: ""
 
+// #425: Sentry DSN for crash reporting. Supplied out of band (CI secret / local
+// gradle.properties) like the signing credentials above — never hardcoded. When blank,
+// crash reporting is disabled at runtime (Sentry is not initialized), so an unconfigured
+// build simply reports nothing rather than shipping a placeholder DSN.
+val sentryDsn = System.getenv("SENTRY_DSN")?.takeIf { it.isNotBlank() }
+    ?: (project.findProperty("sentry.dsn") as String?)?.takeIf { it.isNotBlank() }
+    ?: ""
+
 val releaseKeystorePath = signingProp("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PATH")
 val releaseKeystorePassword = signingProp("ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = signingProp("ANDROID_KEY_ALIAS", "ANDROID_KEY_ALIAS")
@@ -49,6 +57,9 @@ android {
         // Empty by default: an empty pin set disables pinning, which is what debug builds
         // pointing at a local/dev host want. Only the release build type is gated (#173).
         buildConfigField("String", "CERT_PINS", "\"\"")
+        // #425: Crash reporting DSN. Empty by default (reporting disabled); the release
+        // build type injects the out-of-band value below.
+        buildConfigField("String", "SENTRY_DSN", "\"\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }
@@ -98,6 +109,8 @@ android {
     buildTypes {
         release {
             buildConfigField("String", "CERT_PINS", "\"$releaseCertPins\"")
+            // #425: Inject the out-of-band Sentry DSN into release builds for crash reporting.
+            buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseSigningConfig) {
@@ -161,170 +174,6 @@ configurations.all {
         //  CVE-2026-45416/45536/45673/45674, CVE-2026-46340, CVE-2026-47244/47691,
         //  CVE-2026-48006/48043/48059, CVE-2026-50010/50011/50020/50560,
         //  CVE-2026-55831/55833/55851, CVE-2026-56745/56746/56817/56819-56822,
-        //  CVE-2026-59898-59901/59919-59921, CVE-2025-55163/58056/58057/67735).
-        force("io.netty:netty-buffer:4.1.137.Final")
-        force("io.netty:netty-codec:4.1.137.Final")
-        force("io.netty:netty-codec-http:4.1.137.Final")
-        force("io.netty:netty-codec-http2:4.1.137.Final")
-        force("io.netty:netty-codec-socks:4.1.137.Final")
-        force("io.netty:netty-common:4.1.137.Final")
-        force("io.netty:netty-handler:4.1.137.Final")
-        force("io.netty:netty-handler-proxy:4.1.137.Final")
-        force("io.netty:netty-resolver:4.1.137.Final")
-        force("io.netty:netty-transport:4.1.137.Final")
-        force("io.netty:netty-transport-native-unix-common:4.1.137.Final")
-        force("io.netty:netty-transport-native-epoll:4.1.137.Final")
-        force("io.netty:netty-transport-native-kqueue:4.1.137.Final")
+        //  CVE-2026-59898-59901/5
 
-        // commons-io: patched for CVE-2024-47554 (XmlStreamReader CPU exhaustion)
-        force("commons-io:commons-io:2.22.0")
-
-        // protobuf-java: patched for CVE-2024-7254 (StackOverflow via nested fields)
-        force("com.google.protobuf:protobuf-java:3.25.5")
-        force("com.google.protobuf:protobuf-java-util:3.25.5")
-
-        // guava: patched for CVE-2023-2976 / CVE-2020-8908 (insecure temp-file creation)
-        force("com.google.guava:guava:33.6.0-jre")
-        force("com.google.guava:guava:33.6.0-android")
-    }
-}
-
-dependencies {
-    testImplementation("org.hamcrest:hamcrest:2.2")
-
-    // Compose BOM
-    implementation(platform(libs.compose.bom))
-    implementation(libs.compose.ui)
-    implementation(libs.compose.material3)
-    implementation(libs.compose.ui.tooling.preview)
-    implementation(libs.compose.material.icons.extended)
-    implementation(libs.activity.compose)
-    implementation(libs.navigation.compose)
-    debugImplementation(libs.compose.ui.tooling)
-
-    // Lifecycle / ViewModel
-    implementation(libs.lifecycle.viewmodel.compose)
-    implementation(libs.lifecycle.runtime.compose)
-
-    // Hilt DI
-    implementation(libs.hilt.android)
-    ksp(libs.hilt.compiler)
-    implementation(libs.hilt.navigation.compose)
-
-    // Networking
-    implementation(libs.ktor.client.android)
-    implementation(libs.ktor.client.content.negotiation)
-    implementation(libs.ktor.serialization.kotlinx.json)
-    implementation(libs.ktor.client.logging)
-    implementation(libs.ktor.client.websockets)
-
-    // Serialization
-    implementation(libs.kotlinx.serialization.json)
-
-    // DataStore (offline)
-    implementation(libs.datastore.preferences)
-
-    // Biometric authentication
-    implementation(libs.biometric)
-
-    // Encrypted local storage (auth token)
-    implementation(libs.security.crypto)
-
-    // Credentials (Passkey)
-    implementation(libs.credentials)
-    implementation(libs.credentials.play.services.auth)
-
-    // Firebase Messaging (push notifications)
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.messaging)
-
-    // Room (offline check-in queue)
-    implementation(libs.room.runtime)
-    implementation(libs.room.ktx)
-    ksp(libs.room.compiler)
-
-    // WorkManager
-    implementation(libs.work.runtime.ktx)
-
-    // Hilt WorkManager integration
-    implementation(libs.hilt.work)
-    ksp(libs.hilt.work.compiler)
-
-    // Testing
-    testImplementation(libs.junit)
-    testImplementation(libs.kotlinx.coroutines.test)
-    testImplementation(libs.mockk)
-    testImplementation(libs.ktor.client.mock)
-    testImplementation(libs.robolectric)
-    testImplementation(libs.androidx.test.ext)
-    testImplementation(libs.work.testing)
-    testImplementation(platform(libs.compose.bom))
-    testImplementation(libs.compose.ui.test.junit4)
-    // Provides the AndroidManifest.xml entry declaring androidx.activity.ComponentActivity
-    // as a launchable activity — createComposeRule() hosts its composition in one under the
-    // hood, and without this, Robolectric has nothing to resolve that launch Intent against
-    // even with a real app manifest merged in (isIncludeAndroidResources above). Must be
-    // debugImplementation, not testImplementation: Robolectric's unit tests reuse the debug
-    // variant's merged manifest, which is built from implementation/debugImplementation
-    // dependencies — testImplementation artifacts are on the test classpath but never
-    // contribute to that manifest merge.
-    debugImplementation(libs.compose.ui.test.manifest)
-    androidTestImplementation(libs.androidx.test.ext)
-    androidTestImplementation(libs.espresso.core)
-    androidTestImplementation(platform(libs.compose.bom))
-    androidTestImplementation(libs.compose.ui.test.junit4)
-    androidTestImplementation(libs.mockk.android)
-    // @HiltAndroidTest / HiltAndroidRule, used by the instrumented tests under androidTest/.
-    androidTestImplementation(libs.hilt.android.testing)
-    kspAndroidTest(libs.hilt.compiler)
-    // Espresso accessibility-checks module + the Android Accessibility Test Framework (ATF)
-    // itself, used by AccessibilityScanTest to guard minimum touch target size (and other a11y
-    // checks) in CI.
-    androidTestImplementation("androidx.test.espresso:espresso-accessibility:3.6.1")
-    androidTestImplementation("com.google.android.apps.common.testing.accessibility.framework:accessibility-test-framework:4.0.0")
-    // Macrobenchmark library for startup performance profiling (#322)
-    androidTestImplementation(libs.benchmark.macro)
-}
-
-// JaCoCo code coverage configuration
-jacoco {
-    toolVersion = "0.8.11"
-}
-
-tasks.withType<Test>().configureEach {
-    jacoco {
-        isIncludeNoLocationClasses = true
-    }
-}
-
-task<JacocoReport>("jacocoTestReport") {
-    dependsOn(tasks.testDebugUnitTest)
-    group = "Coverage"
-    description = "Generate JaCoCo coverage report for unit tests"
-
-    reports {
-        xml.required = true
-        html.required = true
-        csv.required = false
-    }
-
-    sourceDirectories.setFrom(
-        files(
-            "${project.projectDir}/src/main/java",
-            "${project.projectDir}/src/main/kotlin"
-        )
-    )
-
-    classDirectories.setFrom(
-        files(
-            fileTree("${project.buildDir}/intermediates/classes/debug/"),
-            fileTree("${project.buildDir}/tmp/kotlin-classes/debug/")
-        )
-    )
-
-    executionData.setFrom(
-        files(
-            "${project.buildDir}/jacoco/testDebugUnitTest.exec"
-        )
-    )
-}
+/* … truncated 6345 chars — edit only what you need near the top … */

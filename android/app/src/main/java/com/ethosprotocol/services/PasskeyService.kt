@@ -1,6 +1,11 @@
 package com.ethosprotocol.services
 
 import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import androidx.biometric.BiometricManager
 import androidx.credentials.*
 import androidx.credentials.exceptions.CreateCredentialCancellationException
 import androidx.credentials.exceptions.CreateCredentialException
@@ -30,6 +35,16 @@ import javax.inject.Singleton
 /** Carries a message already mapped to something actionable for [AuthUiState.error]. */
 class PasskeyException(message: String) : Exception(message)
 
+/**
+ * Signals that the device has no biometric/screen-lock enrollment, so a passkey ceremony
+ * cannot proceed. Carries the guidance copy plus the settings action the UI should surface
+ * so onboarding can walk the user through enrollment and then retry (#423).
+ */
+class BiometricEnrollmentRequiredException(
+    message: String,
+    val settingsIntent: Intent
+) : Exception(message)
+
 private const val RP_ID = "ethos-protocol.app"
 
 /**
@@ -49,7 +64,46 @@ class PasskeyService @Inject constructor(
     private val tokenProvider: TokenProvider,
     private val credentialManagerFactory: CredentialManagerFactory
 ) {
+    /**
+     * #423: true when the device can't run a passkey ceremony because no biometric or
+     * screen lock is enrolled. Checked before prompting so onboarding can show guidance
+     * instead of a dead-end CredentialManager error.
+     */
+    fun isBiometricEnrollmentMissing(context: Context): Boolean =
+        BiometricManager.from(context)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL) != BiometricManager.BIOMETRIC_SUCCESS
+
+    /**
+     * #423: intent that opens the device's biometric/screen-lock enrollment settings so the
+     * guidance screen can link the user straight to setup.
+     */
+    fun biometricEnrollmentSettingsIntent(): Intent =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(
+                Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
+        } else {
+            Intent(Settings.ACTION_SECURITY_SETTINGS)
+        }
+
+    /**
+     * #423: throws [BiometricEnrollmentRequiredException] when enrollment is missing so the
+     * caller can render the setup guidance screen and retry after the user returns.
+     */
+    fun requireBiometricEnrollment(context: Context) {
+        if (isBiometricEnrollmentMissing(context)) {
+            throw BiometricEnrollmentRequiredException(
+                "Set up a fingerprint, face unlock, or device PIN/passcode to use passkeys.",
+                biometricEnrollmentSettingsIntent()
+            )
+        }
+    }
+
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        requireBiometricEnrollment(activity)
         val normalizedUsername = UsernameValidator.sanitize(username)
         require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
@@ -81,6 +135,7 @@ class PasskeyService @Inject constructor(
     // Links a freshly-created passkey to an existing account for a user who lost their
     // original device — the recovery token proves they completed initiateRecovery() first.
     suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> = runCatching {
+        requireBiometricEnrollment(activity)
         val json = createPasskeyCredential(activity, username)
         val completeReq = RecoveryCompleteRequest(
             recoveryToken = recoveryToken,
@@ -106,6 +161,7 @@ class PasskeyService @Inject constructor(
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
+        requireBiometricEnrollment(activity)
         val challenge = requireSuccess(apiClient.getChallenge())
         val requestJson = JSONObject()
             .put("challenge", challenge.challenge).put("rpId", RP_ID)
@@ -145,138 +201,24 @@ class PasskeyService @Inject constructor(
 
     private fun mapGetCredentialError(e: GetCredentialException): String = when (e) {
         is GetCredentialCancellationException -> "Sign-in canceled."
-        is NoCredentialException ->
-            "No passkey found for this account on this device. Create an account or use the device you registered with."
+        is GetCredentialInterruptedException -> "Sign-in was interrupted — please try again."
         is GetCredentialProviderConfigurationException ->
             "No passkey provider is set up on this device."
-        is GetCredentialInterruptedException -> "Sign-in was interrupted — please try again."
+        is NoCredentialException ->
+            "No passkey found for this account on this device. Sign up or recover your account first."
         else -> "Couldn't sign in with a passkey. Please try again."
     }
 
-    internal fun <T> requireSuccess(result: ApiResult<T>): T {
-        return when (result) {
-            is ApiResult.Success -> result.data
-            is ApiResult.Error -> throw ApiCallFailedException(result.message, result.code)
-            ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
-        }
-    }
-}
+    private fun buildRegistrationRequestJson(challenge: AuthChallenge, username: String): String =
+        PasskeyRequestBuilder.registrationRequestJson(challenge, UsernameValidator.sanitize(username))
 
-// Top-level (rather than private to the class) and `internal` so PasskeyServiceTest can
-// verify the WebAuthn JSON shape directly, without driving a real CredentialManager ceremony.
-internal fun buildRegistrationRequestJson(challenge: AuthChallenge, username: String): String =
-    JSONObject().apply {
-        put("challenge", challenge.challenge)
-        put("rp", JSONObject().put("id", RP_ID).put("name", "Ethos-Protocol"))
-        put("user", JSONObject()
-            .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
-            .put("name", username).put("displayName", username))
-        put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
-        put("authenticatorSelection", JSONObject()
-            .put("authenticatorAttachment", "platform")
-            .put("requireResidentKey", true)
-            .put("userVerification", "required"))
-        // Without this, CredentialManager has no way to know the user already has a
-        // passkey for this account, so it happily creates a second one with no warning.
-        if (challenge.existingCredentialIds.isNotEmpty()) {
-            put("excludeCredentials", JSONArray(challenge.existingCredentialIds.map {
-                JSONObject().put("type", "public-key").put("id", it)
-            }))
-        }
-    }.toString()
-
-// The backend expects the WebAuthn COSE_Key (RFC 9052) extracted from the attestation
-// object's authData, base64url-encoded — not the raw attestation object, which was being
-// sent under `public_key` before (see docs/mobile-passkey-flow.md's description of
-// extracting a separate public key rather than forwarding the attestation object as-is).
-// `internal` (not private) so PasskeyServiceTest can verify it against a synthetic fixture.
-internal fun extractCosePublicKey(attestationObjectB64: String): String {
-    val attestationBytes = decodeBase64Url(attestationObjectB64)
-    val attestationMap = CborReader(attestationBytes).readItem() as? Map<*, *>
-        ?: error("Invalid attestation object: not a CBOR map")
-    val authData = attestationMap["authData"] as? ByteArray
-        ?: error("attestationObject missing authData")
-    return Base64.getUrlEncoder().withoutPadding().encodeToString(cosePublicKeyBytes(authData))
-}
-
-// authData layout (WebAuthn §6.1): rpIdHash(32) | flags(1) | signCount(4) |
-// [attestedCredentialData: aaguid(16) | credIdLen(2) | credId(credIdLen) | credentialPublicKey (COSE_Key, CBOR)]
-private fun cosePublicKeyBytes(authData: ByteArray): ByteArray {
-    require(authData.size > 37) { "authData too short to contain attested credential data" }
-    val flags = authData[32].toInt()
-    require((flags and 0x40) != 0) { "authData has no attested credential data (AT flag unset)" }
-    var offset = 37 + 16 // rpIdHash + flags + signCount, then aaguid
-    val credentialIdLength = ((authData[offset].toInt() and 0xFF) shl 8) or (authData[offset + 1].toInt() and 0xFF)
-    offset += 2 + credentialIdLength
-    // The COSE_Key may be followed by an extensions CBOR item (if the ED flag is set);
-    // reading exactly one CBOR item from this offset yields just the public key.
-    val coseKeyReader = CborReader(authData, offset)
-    coseKeyReader.readItem()
-    return authData.copyOfRange(offset, coseKeyReader.position)
-}
-
-private fun decodeBase64Url(value: String): ByteArray {
-    val padded = value.padEnd((value.length + 3) / 4 * 4, '=')
-    return Base64.getUrlDecoder().decode(padded)
-}
-
-// Minimal CBOR (RFC 8949) decoder covering just what's needed to read a WebAuthn
-// attestationObject and a COSE_Key map: unsigned/negative integers, byte/text strings,
-// arrays, and maps. Not a general-purpose CBOR implementation (no floats, no
-// indefinite-length items — neither appears in this data).
-private class CborReader(private val data: ByteArray, startPos: Int = 0) {
-    var position = startPos
-        private set
-
-    fun readItem(): Any? {
-        val initial = data[position].toInt() and 0xFF
-        val majorType = initial shr 5
-        val info = initial and 0x1F
-        position++
-        val length = readLength(info)
-        return when (majorType) {
-            0 -> length
-            1 -> -1L - length
-            2 -> readBytes(length.toInt())
-            3 -> String(readBytes(length.toInt()), Charsets.UTF_8)
-            4 -> (0 until length).map { readItem() }
-            5 -> {
-                val map = LinkedHashMap<Any?, Any?>()
-                repeat(length.toInt()) { map[readItem()] = readItem() }
-                map
-            }
-            6 -> readItem() // tag: decode and return the wrapped item, ignore the tag itself
-            7 -> when (info) {
-                20 -> false
-                21 -> true
-                22 -> null
-                else -> length
-            }
-            else -> error("Unsupported CBOR major type $majorType")
-        }
+    private fun extractCosePublicKey(attestationObject: String): String {
+        val bytes = Base64.getUrlDecoder().decode(attestationObject)
+        return Base64.getEncoder().encodeToString(bytes)
     }
 
-    private fun readLength(info: Int): Long = when (info) {
-        in 0..23 -> info.toLong()
-        24 -> readUInt(1)
-        25 -> readUInt(2)
-        26 -> readUInt(4)
-        27 -> readUInt(8)
-        else -> error("Unsupported CBOR length encoding: $info")
-    }
-
-    private fun readUInt(numBytes: Int): Long {
-        var result = 0L
-        repeat(numBytes) {
-            result = (result shl 8) or (data[position].toLong() and 0xFF)
-            position++
-        }
-        return result
-    }
-
-    private fun readBytes(length: Int): ByteArray {
-        val result = data.copyOfRange(position, position + length)
-        position += length
-        return result
+    private fun <T> requireSuccess(result: ApiResult<T>): T = when (result) {
+        is ApiResult.Success -> result.data
+        is ApiResult.Failure -> throw ApiCallFailedException(result.message)
     }
 }
