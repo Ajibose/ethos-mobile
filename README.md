@@ -263,6 +263,17 @@ The Android suite includes unit-level localization checks for:
 
 These checks live in `android/app/src/test/java/com/ethosprotocol/LocalizationTest.kt` and run under the normal `testDebugUnitTest` pipeline, so a locale regression is surfaced in CI with the rest of the Android unit-tests.
 
+### Battery drain testing
+Battery-impact checks are tracked via the Android background-task metrics in `android/app/src/main/java/com/ethosprotocol/services/BackgroundTaskScheduler.kt` and the unit suite in `android/app/src/test/java/com/ethosprotocol/BatteryDrainTest.kt`.
+
+The checks cover:
+- background task frequency and wake-up budget
+- network-bound work that should stay behind a conservative cadence
+- power-hungry operations that are explicitly documented and kept under threshold
+- scheduled refresh intervals for time-critical vs. idle vault states
+
+These metrics are intended to keep urgent refresh work at a capped wake-up rate while leaving normal idle refreshes at a much lower power profile.
+
 ### This workspace already satisfies the requested task list:
 
 Snapshot testing framework: Paparazzi configured
