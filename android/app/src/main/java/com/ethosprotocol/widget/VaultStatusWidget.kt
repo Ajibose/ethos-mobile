@@ -18,6 +18,7 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.MainActivity
 import com.ethosprotocol.utils.DateTimeFormatter
+import com.ethosprotocol.utils.WidgetErrorLogger
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.time.Duration
@@ -242,6 +243,15 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
         if (result is ApiResult.Success) {
             val vaults = result.data.filter { it.status == VaultStatus.active }
 
+            // #438: Log a data-refresh failure when the API succeeds but returns no
+            // active vaults — the call worked but the widget has nothing useful to show.
+            if (vaults.isEmpty()) {
+                WidgetErrorLogger.logDataRefreshFailure(
+                    "Data refresh returned no active vaults (total: ${result.data.size})"
+                )
+                return Result.success()
+            }
+
             // Pick the active vault with the lowest ttlRemaining as the urgency fallback.
             // Individual widget instances may override this with a pinned vault ID (#245/#246).
             val urgentVault = vaults.minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
@@ -281,6 +291,15 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
             }
 
             schedule(applicationContext, determineUpdateInterval(urgentVault.ttlRemaining))
+        } else {
+            // #438: Log a load failure for any non-Success result (network unavailable
+            // or API error) so it surfaces in Logcat and Firebase Performance.
+            val reason = when (result) {
+                is ApiResult.NetworkUnavailable -> "Network unavailable"
+                is ApiResult.Error -> "API error ${result.code}: ${result.message}"
+                else -> result::class.simpleName ?: "Unknown error"
+            }
+            WidgetErrorLogger.logLoadFailure(reason)
         }
         return Result.success()
     }

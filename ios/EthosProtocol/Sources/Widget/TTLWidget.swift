@@ -99,6 +99,15 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
             let vaults = try await APIClient.shared.listAllVaults()
             let activeVaults = vaults.filter { $0.status == .active }
 
+            // #438: Log a data-refresh failure when there are no active vaults to display.
+            // This is distinct from a network error — the API call succeeded but returned
+            // no usable data, which is worth tracking separately for debugging.
+            if activeVaults.isEmpty {
+                WidgetErrorLogger.shared.logDataRefreshFailure(
+                    message: "Data refresh returned no active vaults (total vaults: \(vaults.count))"
+                )
+            }
+
             // If the intent specifies a vault ID, try to find that vault.
             // Otherwise fall back to the most-urgent vault (lowest ttlRemaining).
             let selected: Vault?
@@ -119,6 +128,11 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
                 beneficiary: selected.map { String($0.beneficiary.prefix(12)) + "…" } ?? "—"
             )
         } catch {
+            // #438: Log the load failure so it surfaces in the system Console
+            // and contributes to the rolling widget error metrics.
+            WidgetErrorLogger.shared.logLoadFailure(
+                message: error.localizedDescription
+            )
             entry = VaultEntry(
                 date: .now,
                 vaultID: "",
