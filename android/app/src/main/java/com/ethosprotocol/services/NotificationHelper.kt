@@ -38,6 +38,14 @@ class NotificationHelper @Inject constructor(
         const val NO_VAULT_NOTIFICATION_ID = 1
 
         private const val VAULT_NOTIFICATION_IDS_PREFS = "vault_notification_ids"
+
+        // In-app notification banner preferences.
+        private const val IN_APP_PREFS = "in_app_notifications"
+        private const val KEY_BANNER_POSITION = "banner_position"
+
+        // Customizable banner positions for the in-app notification banner.
+        const val POSITION_TOP = "top"
+        const val POSITION_BOTTOM = "bottom"
     }
 
     // String.hashCode() collides between distinct vault IDs within the 32-bit hash space, which
@@ -47,6 +55,9 @@ class NotificationHelper @Inject constructor(
     // rather than merely "unlikely" to collide.
     private val vaultNotificationIdPrefs =
         context.getSharedPreferences(VAULT_NOTIFICATION_IDS_PREFS, Context.MODE_PRIVATE)
+
+    private val inAppPrefs =
+        context.getSharedPreferences(IN_APP_PREFS, Context.MODE_PRIVATE)
 
     init {
         createChannel(CHANNEL_ID, context.getString(R.string.notification_channel_checkin_reminders), NotificationManager.IMPORTANCE_HIGH)
@@ -61,6 +72,24 @@ class NotificationHelper @Inject constructor(
         val id = VAULT_NOTIFICATION_ID_RANGE_START + vaultNotificationIdPrefs.all.size
         vaultNotificationIdPrefs.edit().putInt(vaultId, id).apply()
         return id
+    }
+
+    /**
+     * Badge count for pending check-ins. Used by the in-app notification badge so users
+     * can see at a glance how many check-ins are still awaiting action.
+     */
+    fun pendingCheckInBadgeCount(pendingCheckIns: Int): Int = pendingCheckIns.coerceAtLeast(0)
+
+    /**
+     * Customizable position for the in-app notification banner. Defaults to the top of the
+     * screen; callers may persist a different position via [setBannerPosition].
+     */
+    fun getBannerPosition(): String =
+        inAppPrefs.getString(KEY_BANNER_POSITION, POSITION_TOP) ?: POSITION_TOP
+
+    fun setBannerPosition(position: String) {
+        val normalized = if (position == POSITION_BOTTOM) POSITION_BOTTOM else POSITION_TOP
+        inAppPrefs.edit().putString(KEY_BANNER_POSITION, normalized).apply()
     }
 
     fun show(title: String, body: String, vaultId: String?, ttlRemaining: Long? = null, isCritical: Boolean = false) {
@@ -165,27 +194,28 @@ class NotificationHelper @Inject constructor(
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (vaultId.isNotEmpty())
-                data = android.net.Uri.parse("ethosprotocol://vault/$vaultId/view-details")
+                data = android.net.Uri.parse("ethosprotocol://vault/$vaultId/check-in")
         }
-        val pi = PendingIntent.getActivity(
-            context, vaultId.hashCode(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pi = PendingIntent.getActivity(context, notificationIdFor(vaultId), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
         val notification = NotificationCompat.Builder(context, EXPIRED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle(context.getString(R.string.notification_vault_expired_title))
             .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
+
         context.getSystemService(NotificationManager::class.java)
-            .notify(notificationIdFor(vaultId.ifEmpty { null }), notification)
+            .notify(notificationIdFor(vaultId), notification)
     }
 
     private fun createChannel(id: String, name: String, importance: Int) {
-        val channel = NotificationChannel(id, name, importance)
-        context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(id) == null) {
+            nm.createNotificationChannel(NotificationChannel(id, name, importance))
+        }
     }
 }

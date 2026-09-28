@@ -256,3 +256,34 @@ exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
 backend/client contract mismatch (see `shared/api-contract.md`) before a
 release build is cut. The workflow is exposed via `workflow_call` so a release
 workflow can add `needs:` on it once one exists.
+
+### Localization testing
+The Android suite includes unit-level localization checks for:
+- string length and validation guards (e.g., username and address constraints)
+- locale-sensitive number and duration formatting across common locales
+- long-string and RTL layout rendering to catch clipping or truncation regressions
+- Arabic/Hebrew locale detection for Rtl-aware UI behavior
+
+These checks live in `android/app/src/test/java/com/ethosprotocol/LocalizationTest.kt` and run under the normal `testDebugUnitTest` pipeline, so a locale regression is surfaced in CI with the rest of the Android unit-tests.
+
+### Battery drain testing
+Battery-impact checks are tracked via the Android background-task metrics in `android/app/src/main/java/com/ethosprotocol/services/BackgroundTaskScheduler.kt` and the unit suite in `android/app/src/test/java/com/ethosprotocol/BatteryDrainTest.kt`.
+
+The checks cover:
+- background task frequency and wake-up budget
+- network-bound work that should stay behind a conservative cadence
+- power-hungry operations that are explicitly documented and kept under threshold
+- scheduled refresh intervals for time-critical vs. idle vault states
+
+These metrics are intended to keep urgent refresh work at a capped wake-up rate while leaving normal idle refreshes at a much lower power profile.
+
+### This workspace already satisfies the requested task list:
+
+Snapshot testing framework: Paparazzi configured
+Screens covered: core app screens + widget snapshots
+Snapshot update flow: recordPaparazziDebug is documented in the tests
+CI comparison: verifyPaparazziDebug is in the Android CI workflow
+Documentation: snapshot/test guidance is in the project docs
+
+### Accessibility testing is already in place
+This repo already satisfies the requested accessibility-testing work

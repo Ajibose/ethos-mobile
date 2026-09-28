@@ -19,6 +19,18 @@ object PasskeyRegistrationDiagnostics {
         val timestampMillis: Long
     )
 
+    /**
+     * Guidance shown when the device has no biometric enrollment, so passkey auth cannot
+     * proceed. [canOpenSettings] indicates whether the platform exposes a settings intent
+     * the user can be sent to in order to enroll.
+     */
+    data class BiometricEnrollmentGuidance(
+        val title: String,
+        val message: String,
+        val settingsActionLabel: String,
+        val canOpenSettings: Boolean
+    )
+
     private val eventLog: MutableList<Entry> = Collections.synchronizedList(mutableListOf())
 
     /**
@@ -28,6 +40,47 @@ object PasskeyRegistrationDiagnostics {
      */
     fun logFailure(authenticatorAttachment: String, attestationFormat: String?, reason: String, now: Long = System.currentTimeMillis()) {
         eventLog.add(Entry(authenticatorAttachment, attestationFormat, reason, now))
+    }
+
+    /**
+     * Detects whether biometric enrollment is missing for the given authenticator state.
+     * [biometricHardwareAvailable] is false when the device has no biometric sensor at all;
+     * [biometricEnrolled] is false when the sensor exists but no biometric is enrolled.
+     * Enrollment is considered missing only when hardware is present but nothing is enrolled,
+     * since a device without hardware cannot be fixed via settings.
+     */
+    fun isBiometricEnrollmentMissing(biometricHardwareAvailable: Boolean, biometricEnrolled: Boolean): Boolean {
+        return biometricHardwareAvailable && !biometricEnrolled
+    }
+
+    /**
+     * Builds the setup guidance shown when biometric enrollment is missing. Returns `null`
+     * when enrollment is present (or hardware is absent), so callers can gate the guidance
+     * screen on a single check.
+     */
+    fun buildEnrollmentGuidance(
+        biometricHardwareAvailable: Boolean,
+        biometricEnrolled: Boolean,
+        canOpenSettings: Boolean
+    ): BiometricEnrollmentGuidance? {
+        if (!isBiometricEnrollmentMissing(biometricHardwareAvailable, biometricEnrolled)) {
+            return null
+        }
+        return BiometricEnrollmentGuidance(
+            title = "Set up biometrics to use passkeys",
+            message = "Passkey sign-in needs a biometric enrolled on this device. " +
+                "Add a fingerprint or face in your device settings, then try again.",
+            settingsActionLabel = "Open device settings",
+            canOpenSettings = canOpenSettings
+        )
+    }
+
+    /**
+     * Whether passkey auth should be retried after the user returns from enrolling a
+     * biometric. Retry is only meaningful once enrollment is no longer missing.
+     */
+    fun shouldRetryAfterEnrollment(biometricHardwareAvailable: Boolean, biometricEnrolled: Boolean): Boolean {
+        return !isBiometricEnrollmentMissing(biometricHardwareAvailable, biometricEnrolled)
     }
 
     fun getLoggedEvents(): List<Entry> = synchronized(eventLog) { eventLog.toList() }
