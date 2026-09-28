@@ -13,29 +13,37 @@ import androidx.appcompat.app.AppCompatActivity
 import com.ethosprotocol.R
 
 /**
- * Widget configuration activity (#245).
+ * Widget configuration activity (#245 / #431).
  *
- * Launched automatically when the user adds a new Vault Status widget to the home screen.
- * Lets the user pin a specific vault to this widget instance; if the user cancels, the
- * widget falls back to the most-urgent vault (urgency selection).
+ * Three-step flow:
+ *   1. Vault selection   – pin a specific vault to this widget instance (#245 / #246).
+ *   2. Refresh interval  – choose how often the widget polls for new data (#431).
+ *   3. Colour scheme     – pick an accent colour for the widget (#431).
  *
- * The chosen vault ID is persisted to per-widget SharedPreferences via
- * [VaultStatusWidget.saveSelectedVaultId] (#246), which [VaultWidgetUpdateWorker] reads
- * when deciding which vault data to render for each widget instance.
+ * After all three steps the activity commits the selections to per-widget
+ * SharedPreferences, triggers an immediate widget update, and returns RESULT_OK.
+ * Pressing back at any step cancels and returns RESULT_CANCELED (launcher removes
+ * the widget).
  */
 class VaultWidgetConfigActivity : AppCompatActivity() {
 
     private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
 
+    // Selections accumulated across steps.
+    private var selectedVaultId: String? = null
+    private var selectedRefreshMinutes: Int = VaultStatusWidget.DEFAULT_REFRESH_INTERVAL
+    private var selectedColorScheme: String = VaultStatusWidget.COLOR_SCHEME_AUTO
+
+    // Step index: 0 = vault, 1 = refresh interval, 2 = colour scheme.
+    private var step = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Returning RESULT_CANCELED causes the launcher to remove the widget if the activity
-        // finishes before setting RESULT_OK — set this as the default before anything else
-        // so a crash or unexpected back-press doesn't leave an orphan widget entry.
+        // Returning RESULT_CANCELED causes the launcher to remove the widget if the
+        // activity finishes before setting RESULT_OK.
         setResult(Activity.RESULT_CANCELED)
 
-        // Extract the widget ID that launched this activity.
         appWidgetId = intent?.extras?.getInt(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             AppWidgetManager.INVALID_APPWIDGET_ID
@@ -46,63 +54,136 @@ class VaultWidgetConfigActivity : AppCompatActivity() {
             return
         }
 
-        // Load the vault ID list saved by VaultWidgetUpdateWorker after its last successful
-        // fetch. If no vaults are available yet, show a message and fall back to urgency.
+        showStep()
+    }
+
+    // -------------------------------------------------------------------------
+    // Step routing
+    // -------------------------------------------------------------------------
+
+    private fun showStep() {
+        when (step) {
+            0 -> showVaultStep()
+            1 -> showRefreshIntervalStep()
+            2 -> showColorSchemeStep()
+            else -> finishWithSelections()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 0: vault selection
+    // -------------------------------------------------------------------------
+
+    private fun showVaultStep() {
         val vaultIds = loadVaultIdList(this)
 
         if (vaultIds.isEmpty()) {
             Toast.makeText(this, getString(R.string.widget_no_vaults), Toast.LENGTH_SHORT).show()
-            finishWithUrgencyFallback()
+            // Skip vault pinning (urgency fallback) but still go through the config steps.
+            selectedVaultId = null
+            step = 1
+            showStep()
             return
         }
 
-        // Build a simple full-screen layout: title + list of vault IDs.
-        val layout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 32)
-        }
-
-        val title = TextView(this).apply {
-            text = getString(R.string.widget_configure_title)
-            textSize = 18f
-            setPadding(0, 0, 0, 24)
-        }
-        layout.addView(title)
-
+        val layout = buildListLayout(getString(R.string.widget_configure_title))
         val listView = ListView(this)
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, vaultIds)
-        listView.adapter = adapter
+        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, vaultIds)
         layout.addView(listView)
-
         setContentView(layout)
 
         listView.setOnItemClickListener { _, _, position, _ ->
-            val selectedVaultId = vaultIds[position]
-            onVaultSelected(selectedVaultId)
+            selectedVaultId = vaultIds[position]
+            step = 1
+            showStep()
         }
     }
 
-    private fun onVaultSelected(vaultId: String) {
-        // Persist the user's choice to per-widget prefs so the worker can read it.
-        VaultStatusWidget.saveSelectedVaultId(this, appWidgetId, vaultId)
+    // -------------------------------------------------------------------------
+    // Step 1: refresh interval (#431)
+    // -------------------------------------------------------------------------
 
-        // Trigger an immediate widget update so the newly configured vault is visible right away.
+    private fun showRefreshIntervalStep() {
+        val options = listOf(
+            getString(R.string.widget_config_refresh_15) to 15,
+            getString(R.string.widget_config_refresh_30) to 30,
+            getString(R.string.widget_config_refresh_60) to 60
+        )
+
+        val layout = buildListLayout(getString(R.string.widget_config_refresh_title))
+        val listView = ListView(this)
+        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1,
+            options.map { it.first })
+        layout.addView(listView)
+        setContentView(layout)
+
+        listView.setOnItemClickListener { _, _, position, _ ->
+            selectedRefreshMinutes = options[position].second
+            step = 2
+            showStep()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 2: colour scheme (#431)
+    // -------------------------------------------------------------------------
+
+    private fun showColorSchemeStep() {
+        val options = listOf(
+            getString(R.string.widget_config_color_auto)   to VaultStatusWidget.COLOR_SCHEME_AUTO,
+            getString(R.string.widget_config_color_blue)   to VaultStatusWidget.COLOR_SCHEME_BLUE,
+            getString(R.string.widget_config_color_green)  to VaultStatusWidget.COLOR_SCHEME_GREEN,
+            getString(R.string.widget_config_color_orange) to VaultStatusWidget.COLOR_SCHEME_ORANGE
+        )
+
+        val layout = buildListLayout(getString(R.string.widget_config_color_title))
+        val listView = ListView(this)
+        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1,
+            options.map { it.first })
+        layout.addView(listView)
+        setContentView(layout)
+
+        listView.setOnItemClickListener { _, _, position, _ ->
+            selectedColorScheme = options[position].second
+            step = 3
+            showStep()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Finish: persist and update
+    // -------------------------------------------------------------------------
+
+    private fun finishWithSelections() {
+        // Persist vault selection (null = urgency fallback).
+        selectedVaultId?.let { VaultStatusWidget.saveSelectedVaultId(this, appWidgetId, it) }
+        // #431: Persist refresh interval and colour scheme.
+        VaultStatusWidget.saveRefreshIntervalMinutes(this, appWidgetId, selectedRefreshMinutes)
+        VaultStatusWidget.saveColorScheme(this, appWidgetId, selectedColorScheme)
+
+        // Trigger an immediate update so the newly configured vault is visible right away.
         val manager = AppWidgetManager.getInstance(this)
         VaultStatusWidget.updateWidget(this, manager, appWidgetId)
 
-        // Signal success to the launcher so the widget is pinned to the home screen.
-        val resultValue = Intent().apply {
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        }
+        val resultValue = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
         setResult(Activity.RESULT_OK, resultValue)
         finish()
     }
 
-    /** User pressed back or otherwise cancelled — widget falls back to urgency selection. */
-    private fun finishWithUrgencyFallback() {
-        // RESULT_CANCELED was already set in onCreate; just finish so the launcher
-        // knows no vault was pinned and the urgency default will be used.
-        finish()
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private fun buildListLayout(title: String): android.widget.LinearLayout {
+        return android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(32, 48, 32, 32)
+            addView(TextView(this@VaultWidgetConfigActivity).apply {
+                text = title
+                textSize = 18f
+                setPadding(0, 0, 0, 24)
+            })
+        }
     }
 
     companion object {

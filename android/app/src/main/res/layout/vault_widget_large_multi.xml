@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Large multi-vault widget layout: primary vault + up to 2 additional vaults (#433) -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="#FF1C1C1E">
+
+    <!-- Primary vault section -->
+    <TextView
+        android:id="@+id/widget_vault_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textStyle="bold"
+        android:textSize="16sp"
+        android:textColor="#FFFFFFFF"
+        android:text="—"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:contentDescription="@string/widget_vault_name_description" />
+
+    <TextView
+        android:id="@+id/widget_ttl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="#FFEBEBF5"
+        android:layout_marginTop="4dp"
+        android:text="TTL: —"
+        android:contentDescription="@string/widget_ttl_description" />
+
+    <TextView
+        android:id="@+id/widget_balance"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="#FFEBEBF5"
+        android:layout_marginTop="2dp"
+        android:text="Balance: —"
+        android:contentDescription="@string/widget_balance_description" />
+
+    <TextView
+        android:id="@+id/widget_beneficiary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="#FFEBEBF5"
+        android:layout_marginTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:text="Beneficiary: —"
+        android:contentDescription="@string/widget_beneficiary_description" />
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp"
+        android:background="#44FFFFFF" />
+
+    <!-- Other Vaults label -->
+    <TextView
+        android:id="@+id/widget_other_vaults_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="10sp"
+        android:textColor="#88FFFFFF"
+        android:textAllCaps="true"
+        android:text="@string/widget_other_vaults_label" />
+
+    <!-- Additional vault row 1 (#433) -->
+    <LinearLayout
+        android:id="@+id/widget_vault2_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="4dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/widget_vault2_name"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="12sp"
+            android:textColor="#FFEBEBF5"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="—" />
+
+        <TextView
+            android:id="@+id/widget_vault2_ttl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textColor="#FFEBEBF5"
+            android:layout_marginStart="8dp"
+            android:text="—" />
+    </LinearLayout>
+
+    <!-- Additional vault row 2 (#433) -->
+    <LinearLayout
+        android:id="@+id/widget_vault3_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="4dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/widget_vault3_name"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="12sp"
+            android:textColor="#FFEBEBF5"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="—" />
+
+        <TextView
+            android:id="@+id/widget_vault3_ttl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textColor="#FFEBEBF5"
+            android:layout_marginStart="8dp"
+            android:text="—" />
+    </LinearLayout>
+
+</LinearLayout>
