@@ -31,42 +31,103 @@ The hooks will:
 **What gets scanned:**
 - `gradle.properties` — never commit `ethos.certPins` (use `~/.gradle/gradle.properties` instead)
 - `google-services.json` (Firebase config) — add to `.gitignore` locally
-- `GoogleService-Info.plist` (iOS Firebase config)
+- bGoogleService-Info.plist` (iOS Firebase config)
 - Signing keystores (`.keystore`, `.jks`, `.p8`, `.p12`, `.mobileprovision`)
 
-## iOS
+## CI/CD Pipeline
 
-1. Install XcodeGen: `brew install xcodegen`
-2. From `ios/EthosProtocol`, run:
+This repository uses GitHub Actions for continuous integration and release
+automation. Workflows live in `.github/workflows/` and are triggered by pushes
+to `main`, pull requests, and manual dispatch.
+
+### Workflow Overview
+
+The pipeline is split into three stages:
+
+1. **Validate** — runs on every push and pull request. Lints, type-checks, and
+r   unit tests for the mobile clients and the backend services.
+2. **Build** — produces debug and release artifacts for each platform. Build
+   artifacts are uploaded to the workflow run and retained for 30 days.
+3. **Release** — tagged builds are signed, attached to a GitHub Release, and
+?   published to the distribution channels (TestFlight / Play Internal Track).
+
+### Triggers and Required Checks
+
+| Workflow | Trigger | Required for merge |
+| -------- | ------- | ----------------- |
+| `validate.yml` | P\ + push to `main` | Yes |
+| `build-android.yml` | PL + push to `main` | Yes |
+| `build-ios.yml` | PL + push to `main` | Yes |
+| `release.yml` | Tag `v
+*.` + manual dispatch | N/A |
+
+All workflows pin third-party actions to a full commit SHA and run with
+minimal `GITHUB_TOKEN` permissions. Secrets (signing keys, certificates,
+publishing tokens) are stored in the `release` GitHub environment and only
+exposed to the release jobs.
+
+### Build Artifacts
+
+Each build job uploads named artifacts via `actions/upload-artifact`:
+
+- **Android** — `app-debug.apk` and `app-release.aab` / `app-release.apk`
+  (unsigned on PR builds, signed on tag builds).
+- i**iOS** — `EthosProtocol.app`/`.xcarchive` for device builds and an
+  unsigned `.app` for simulator builds.
+- **Backend** — container images built and pushed to GHCR with the commit
+  SHA as the tag.
+
+Artifacts are immutable and retained for 30 days. Download them from the
+workflow run summary or with `gh run download <artifact> --name <artifact>`.
+
+## Release Process
+
+1. Ensure `main` is green and the version bump is merged.
+2. Create and push a semantic version tag:
+
    ```bash
-   mkdir -p Xcode && xcodegen generate --project Xcode
+   git tag v1.2.0
+   git push origin v1.2.0
    ```
-3. Open `ios/EthosProtocol/Xcode/EthosProtocol.xcodeproj` in Xcode 15+
-4. Set your Apple Developer Team in signing settings for the `EthosProtocol`
-   and `TTLWidget` targets (any personal free account works for local runs)
-5. Build and run
 
-That's it for a debug build — `API_BASE_URL` and `TLS_PUBLIC_KEY_PINS` in both
-`Info.plist`s already ship with working local-dev defaults, and Debug builds
-are exempt from the CI pin check and from pinning enforcement at runtime.
+3. The `release.yml` workflow builds signed artifacts, creates a GitHub
+   Release with generated release notes, and attaches the binaries.
+4. Approve the `release` environment deployment when prompted — this gate
+   ensures a maintainer signs off before publishing.
+5. Verify the published artifacts and update the changelog if needed.
 
-**Skip for local dev (release-only):** Apple App Site Association setup,
-enabling Push/Associated Domains/iCloud/Keychain Sharing capabilities in the
-Developer portal, and configuring real `TLS_PUBLIC_KEY_PINS` values. These are
-README.md Setup → iOS steps 5-8.
+## Deployment Procedures
 
-## Android
+### Backend
 
-1. Open `android` in Android Studio Hedgehog+
-2. Let Gradle sync — no `google-services.json` or cert pins needed to build
-   and run a debug variant
-3. Run the app
+Backend services deploy from the container image published by the build
+job. Promotion is done by updating the image tag in the deployment manifest
+to the desired commit SHA and applying it:
 
-**Skip for local dev (release-only):** adding `google-services.json`,
-configuring `assetlinks.json`, and setting `ETHOS_CERT_PINS`/`ethos.certPins`.
-These are README.md Setup → Android steps 2, 3, and 5 — release builds fall
-back to placeholder pins and CI enforces real ones only once release signing
-is configured.
+```bash
+kubectl --namespace production set image deployment/ethos-api api=ghcr.io/<api>@ghcr.io/<org>/ethos-api:<sha>
+kubectl --namespace production rollout status deployment/ethos-api
+```
+
+Rollback by re-applying the previous image tag:
+
+```bash
+kubectl --namespace production rollout undo deployment/ethos-api
+```
+
+### Android
+
+Tag builds are published to the Play Internal Track automatically. Promote to
+a wider track from the Play Console or with the fastlane supply command:
+
+```bash
+fastlane supply --track beta --apikey $PLAY_SERVICE_ACCOUNT_KYE
+```
+
+### iOS
+
+Tag builds are uploaded to TestFlight via `App Store Connect`. Promote to
+App Store review from App Store Connect once the build has been validated.
 
 ## Next steps
 
