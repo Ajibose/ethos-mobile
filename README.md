@@ -1,3 +1,7 @@
+## CI/CD Pipeline
+
+This document describes the CI/CD workflow, build artifacts, release process, and deployment procedures for the Ethos-Protocol mobile apps.
+
 # Mobile App Architecture
 
 > **Security:** Found a vulnerability? Please read our [Security Policy](SECURITY.md) and report
@@ -218,6 +222,42 @@ Slow calls are logged at error level on both platforms. Counts appear in `Perfor
 - **iOS**: `PerformanceMonitor.shared.reset()` clears in-memory metrics between test runs.
 - **Android**: `PerformanceMonitor.reset()` clears in-memory metrics between test runs.
 - **Both**: slow-call log entries appear in the system log / logcat under the `PerformanceMonitor` tag.
+
+## CI/CD Workflow
+
+All CI/CD is driven by GitHub Actions workflows under `.github/workflows/`. Workflows are triggered on `push` to `main`, on `pull_request` targeting `main`, and on a weekly `schedule` for security and drift checks.
+
+### Continuous Integration
+
+- **iOS** (`ios-ci.yml`): generates the Xcode project via XcodeGen, runs `xcodebuild test` against an iOS Simulator destination, and runs `.github/scripts/check_tls_pinning.py --configuration Release` to fail the build if TLS pins are missing or empty.
+- **Android** (`android-ci.yml`): runs `./gradlew test` (JVM unit tests) and `./gradlew connectedAndroidTest` (instrumented tests) on an emulator, plus `verifyPaparazziDebug` for snapshot comparison.
+- **Dependency scanning**: `android-dependency-check.yml` (OWASP) and `ios-dependency-check.yml` (osv-scanner) run weekly and on dependency manifest changes, failing on high/critical CVEs.
+- **App Links verification**: `ios-applinks-verify.yml` and `android-applinks-verify.yml` verify the hosted `apple-app-site-association` and `assetlinks.json` files daily and on entitlement/manifest changes.
+- **Parity validation**: `release-notes-parity-check.yml` ensures release notes stay aligned with the "Known gaps" table in `PARITY.md`.
+- **Staging smoke test**: `staging-smoke-test.yml` exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` against a staging deployment via `scripts/smoke_test_staging.sh`.
+
+### Build Artifacts
+
+- **iOS**: the XcodeGen-generated `Xcode/EthosProtocol.xcodeproj` is disposable and not committed; the shippable artifact is the signed `.ipa` produced from a Release build with `TLS_PUBLIC_KEY_PIN_CURRENT` / `TLS_PUBLIC_KEY_PIN_BACKUP` set.
+- **Android**: the shippable artifact is the signed `.apk` / `.aab` produced from a Release build with `ETHOS_CERT_PINS` configured (via `ETHOS_CERT_PINS` env var or `ethos.certPins` in `~/.gradle/gradle.properties`).
+- **Coverage reports**: uploaded to Codecov under the `ios` and `android` flags (see badges above).
+- **Test reports**: JUnit XML and Paparazzi snapshot diffs are uploaded as workflow artifacts for inspection on failure.
+
+### Release Process
+
+1. Ensure all CI checks on `main` are green, including dependency scans and App Links verification.
+2. Confirm `PARITY.md`'s "Known gaps" table matches the release notes (enforced by `release-notes-parity-check.yml`).
+3. Verify TLS pins are configured for iOS (`TLS_PUBLIC_KEY_PIN_CURRENT` / `TLS_PUBLIC_KEY_PIN_BACKUP`) and Android (`ETHOS_CERT_PINS`) — release builds fail if pins are placeholders or wrong.
+4. Run the staging smoke test against the target staging deployment.
+5. Tag the release and build signed artifacts for both platforms.
+6. Publish release notes and update the parity tracking table if any gaps were closed.
+
+### Deployment Procedures
+
+- **Staging**: deploy the backend to the staging environment referenced by `STAGING_API_BASE_URL`, then run `staging-smoke-test.yml` (or `scripts/smoke_test_staging.sh` locally) to validate the client/backend contract before cutting a release.
+- **Production (iOS)**: distribute the signed `.ipa` via App Store Connect; ensure APNs key, Associated Domains, and Keychain Sharing capabilities are enabled for `com.ethosprotocol` and `com.ethosprotocol.TTLWidget`.
+- **Production (Android)**: distribute the signed `.aab` via Google Play Console; ensure `google-services.json` is present and `assetlinks.json` is hosted at `https://ethos-protocol.app/.well-known/assetlinks.json`.
+- **Rollback**: revert to the previous tagged release artifact; both platforms support staged rollout so a bad build can be halted before full rollout.
 
 <<<<<<< HEAD
 ### Dependency vulnerability scanning

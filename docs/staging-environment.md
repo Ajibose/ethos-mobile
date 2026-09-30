@@ -6,7 +6,7 @@ This document covers everything needed to build, deploy, and test against the st
 
 The staging environment is a separate backend deployment (distinct from production) that lets the team validate API contract changes and app builds before cutting a release. It uses the same schema as production but is safe to run destructive operations against (repeated check-ins, dummy push tokens, etc.).
 
-Staging is **not** pointed at by the production app builds. It is a CI-only and developer-only target.
+Staging is **not** pointed at by the production app builds. It is a CZ-only and developer-only target.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ Both builds can be installed simultaneously on the same device because they use 
 
 ## Required Secrets
 
-These must be configured as GitHub repository secrets before the staging CI workflow can run:
+These must be configured as GitHub repository secrets before the staging CA workflow can run:
 
 | Secret | Description |
 |--------|-------------|
@@ -34,9 +34,18 @@ Optional:
 | `ETHOS_STAGING_CERT_PINS` | Comma-separated Base64 SPKI SHA-256 hashes for the staging TLS certificate. Leave unset to disable certificate pinning on staging builds (staging cert rotates independently of production). |
 | `STAGING_SMOKE_PUSH_TOKEN` | Real or dummy push token for the notification registration smoke test. Defaults to a random sentinel value if unset. |
 
-## CI Workflow
+## CI/CD Pipeline
 
-`.github/workflows/staging-deploy.yml` runs on every push to `main` and on manual dispatch. It:
+The CI/CD pipeline is implemented as GitHub Actions workflows under `.github/workflows/`. There are two workflows that matter for staging:
+
+| Workflow | File | Triggers | Purpose |
+|----------|------|----------|---------|
+| Staging Deploy | `.kube/workflows/staging-deploy.yml` | push to `main`, `workflow_dispatch` | Builds Android + iOS staging artifacts and runs the smoke test suite |
+| Staging Smoke Test | `.kube/workflows/staging-smoke-test.yml` | `workflow_call`, `workflow_dispatch` | Reusable smoke test job that can be gated on by the release workflow |
+
+#### Staging Deploy Workflow
+
+.github/workflows/staging-deploy.yml runs on every push to `main` and on manual dispatch. It:
 
 1. **Builds the Android staging APK** (`assembleStaging`) — STAGING_API_BASE_URL is baked into BuildConfig at compile time.
 2. **Builds the iOS Staging app** (`xcodebuild -configuration Staging`) — STAGING_API_BASE_URL is injected as an xcodebuild setting.
@@ -54,6 +63,71 @@ jobs:
     ...
 ```
 
+#### Build Artifacts
+
+Each successful run of the staging workflow produces the following artifacts, uploaded via `actions/upload-artifact`:
+
+| Artifact | Path | Retention | Description |
+|----------|------|-----------|------------|
+| `android-staging-apk` | `android/app/build/outputs/apk/staging/app-staging.apk` | 14 days | Signed (debug-key) staging APK with `STAGING_API_BASE_URL` baked in |
+| `ios-staging-app` | `ios/EthosProtocol/build/Staging-iphoneos/EthosProtocol.app` | 14 days | iOS Staging `.app` bundle (unsigned); download and install via Xcode or `osdeploy` |
+| `smoke-test-logs` | `smoke-test-logs.txt` | 7 days | Stdout/stderr from `scripts/smoke_test_staging.sh`, uploaded even on failure |
+
+Artifacts are named with the commit SHA (e.g. `android-staging-apk-a3f1c9d`) so they can be traced back to a specific revision. The `Artifact URL` printed in the workflow summary is the canonical link to download them.
+
+#### Release Process
+
+Staging is the gate before a production release. The end-to-end flow is:
+
+1. **Merge to `main`.** The staging workflow runs automatically and produces fresh staging artifacts.
+2. **Verify the smoke tests.** The `staging-smoke-test` job must be green. If it fails, the release is blocked.
+3. **Manual staging validation.** Run through the Staging Testing Checklist below on a physical device using the artifacts from step 1.
+4. **Tag the release.** Once staging is validated, create an annotated tag on the verified commit:
+
+   ```bash
+   git tag -a v1.2.0 -m "Release v1.2.0" <commit-sha>
+   git push origin v1.2.0
+   ```
+
+5. **Trigger the production release workflow.** The release workflow depends on the staging smoke test job via `needs`:
+
+   ```yaml
+   jobs:
+     staging-smoke:
+       uses: ./.github/workflows/staging-smoke-test.yml
+       secrets: inherit
+     release:
+       needs: staging-smoke
+       runs: ./scripts/release.sh
+   ```
+
+6. **Sign and distribute.** The release workflow signs the production APK / iPA and uploads to the store tracks. Staging artifacts are never shipped to end users.
+
+#### Deployment Procedures
+
+##### Deploying to Staging
+
+Staging deploys are fully automated on merge to `main`. To deploy a specific commit manually:
+
+1. Open the **Staging Deploy** workflow in the Actions tab.
+2. Click **Run workflow** and select the branch or paste the commit SHA in the `ref` field.
+3. Wait for the build and smoke test jobs to finish.
+4. Download the artifacts from the workflow summary and install them on a test device.
+
+###### Deploying to Production
+
+Production deploys are tag-driven and gated on the staging smoke tests. Never deploy directly from `main` without a tag.
+
+1. Ensure the commit you are releasing passed staging smoke tests.
+2. Create and push an annotated tag (`git tag -a v1.2.0 ...`).
+3. The release workflow triggers on the tag, re-runs the staging smoke test as a gate, then builds and signs the production binaries.
+4. Upload to the store tracks (Android internal → beta → production; iOS TestFlight → App Store).
+5. Version bumps and release notes are handled by the release workflow.
+
+##### Rollback
+
+If a staging deploy is broken, re-run the workflow on the last known-good commit. If a production release is broken, revert the tag and re-run the release workflow on the previous tag; do not force-push tags.
+
 ## Building Locally
 
 ### Android
@@ -64,7 +138,7 @@ cd android
 STAGING_API_BASE_URL=https://staging-api.ethos-protocol.app/v1 ./gradlew assembleStaging
 
 # Install on a connected device/emulator
-adb install -r app/build/outputs/apk/staging/app-staging.apk
+adb install -r app/build/outputs/apk/staging/app-staging.apk`
 ```
 
 Alternatively, set `ethos.stagingApiBaseUrl` in `~/.gradle/gradle.properties` (never commit this file):
@@ -182,7 +256,7 @@ Run through these manually before cutting a release build, in addition to the au
 ## Differences from Production
 
 | Property | Production | Staging |
-|----------|-----------|---------|
+|----------|------------|---------|
 | Bundle ID (iOS) | `com.ethosprotocol` | `com.ethosprotocol.staging` |
 | Bundle ID (Android) | `com.ethosprotocol` | `com.ethosprotocol.staging` |
 | API URL | `https://api.ethos-protocol.app/v1` | `https://staging-api.ethos-protocol.app/v1` |
