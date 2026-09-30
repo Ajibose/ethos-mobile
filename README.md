@@ -261,6 +261,14 @@ gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
 
 This keeps parity-status messaging consistent with the cross-platform tracking table and helps release notes communicate platform catch-up progress accurately.
 
+### iOS App Store release automation
+Pushing a `vX.Y.Z` tag (matching `MARKETING_VERSION` in `ios/EthosProtocol/project.yml`) builds, signs, and uploads the iOS app to TestFlight via fastlane. Review submission is opt-in and gated behind approval on the `app-store` environment. Manual runs default to a credential-free dry run.
+
+- Workflow: `.github/workflows/ios-app-store-release.yml`
+- Lanes: `ios/EthosProtocol/fastlane/Fastfile` (`validate`, `beta`, `app_store`)
+- "What's New" generator: `.github/scripts/generate_release_notes.py`
+- Setup, secrets, and the maintainer checklist: [docs/ios-app-store-release.md](docs/ios-app-store-release.md)
+
 ### App Links Verification (Deep Linking & Passkeys)
 
 Both platforms verify that their respective deep-linking and passkey configuration files are correctly hosted and match the app's entitlements/manifest expectations. These checks run daily and on any change to app configuration, catching server-side drift without requiring a code push:
