@@ -1,16 +1,20 @@
 package com.ethosprotocol.services
 
+import androidx.annotation.Keep
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 enum class PendingActionType { CHECK_IN, CREATE_VAULT, DEPOSIT, WITHDRAW }
 
+@Keep
 @kotlinx.serialization.Serializable
 data class DepositPayload(val vaultId: String, val amount: Long)
 
+@Keep
 @kotlinx.serialization.Serializable
 data class WithdrawPayload(val vaultId: String, val amount: Long)
 
+@Keep
 @Entity(
     tableName = "pending_actions",
     indices = [Index(value = ["dedupeKey"], unique = true)]
