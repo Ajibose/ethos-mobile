@@ -1,0 +1,26 @@
+# Answers sent to App Store Connect when a build is submitted for review by
+# `fastlane ios app_store submit_for_review:true` (see docs/ios-app-store-release.md).
+#
+# The first three are legal/compliance statements made on behalf of the
+# publisher, so they ship UNANSWERED on purpose. The lane refuses to submit for
+# review until a maintainer replaces every CONFIRM with true or false.
+
+# Does the app use non-exempt encryption? Info.plist currently declares
+# ITSAppUsesNonExemptEncryption = false (standard HTTPS/TLS only; see the comment
+# there). The lane fails if this answer and Info.plist disagree.
+export_compliance_uses_encryption: CONFIRM
+
+# Does the app contain, show or access third-party content? If true, App Store
+# Connect also expects you to hold the rights to it.
+content_rights_contains_third_party_content: CONFIRM
+
+# Apple no longer accepts IDFA / advertising answers on submission; they live in
+# App Store Connect > App Privacy (data collection and tracking). Set to true
+# once that section is complete and accurate for this version.
+app_privacy_and_tracking_declared: CONFIRM
+
+# Release behaviour after approval (not legal answers; defaults are conservative).
+# false = a maintainer presses "Release" in App Store Connect after approval.
+automatic_release: false
+# true = roll out to users over 7 days (App Store Connect phased release).
+phased_release: false

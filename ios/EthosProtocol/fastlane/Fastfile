@@ -1,0 +1,445 @@
+# frozen_string_literal: true
+
+# App Store Connect release automation (#463). The full flow, every secret and
+# the maintainer checklist are documented in docs/ios-app-store-release.md.
+#
+#   bundle exec fastlane ios validate                     # no credentials, no uploads
+#   bundle exec fastlane ios beta dry_run:true            # validate + unsigned Release build
+#   bundle exec fastlane ios beta                         # build, sign, upload to TestFlight
+#   bundle exec fastlane ios app_store build_number:42 submit_for_review:true
+#
+# Every lane that talks to Apple accepts dry_run:true, which runs all the local
+# validation and prints what would be uploaded, then stops before the first
+# call that needs credentials.
+
+require "fileutils"
+require "yaml"
+
+default_platform(:ios)
+
+# fastlane evaluates this file from fastlane/ but runs actions from its parent,
+# so every path handed to an action is absolute.
+FASTLANE_DIR = File.expand_path(__dir__)
+IOS_ROOT = File.expand_path("..", FASTLANE_DIR)
+REPO_ROOT = File.expand_path("../..", IOS_ROOT)
+PROJECT_SPEC = File.join(IOS_ROOT, "project.yml")
+XCODE_PROJECT = File.join(IOS_ROOT, "Xcode", "EthosProtocol.xcodeproj")
+APP_INFO_PLIST = File.join(IOS_ROOT, "EthosProtocol", "Info.plist")
+METADATA_DIR = File.join(FASTLANE_DIR, "metadata")
+SCREENSHOTS_DIR = File.join(FASTLANE_DIR, "screenshots")
+RELEASE_NOTES_OVERRIDE_DIR = File.join(FASTLANE_DIR, "release_notes")
+REVIEW_CONFIG = File.join(FASTLANE_DIR, "review_submission.yml")
+# `build/` is git-ignored repo-wide.
+OUTPUT_DIR = File.join(IOS_ROOT, "build", "fastlane")
+RELEASE_NOTES_SCRIPT = File.join(REPO_ROOT, ".github", "scripts", "generate_release_notes.py")
+TLS_PINNING_SCRIPT = File.join(REPO_ROOT, ".github", "scripts", "check_tls_pinning.py")
+
+APP_TARGET = "EthosProtocol"
+WIDGET_TARGET = "TTLWidget"
+SCHEME = "EthosProtocol"
+DEFAULT_LOCALE = "en-US"
+TAG_PREFIX = "v"
+
+ASC_ENV = %w[ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64].freeze
+SIGNING_ENV = %w[APPLE_TEAM_IDENTIFIER MATCH_GIT_URL MATCH_PASSWORD].freeze
+BUILD_ENV = %w[ETHOS_CERT_PINS].freeze
+
+# Questions App Store Connect asks on submission. They are legal statements, so
+# review_submission.yml ships them unanswered and submission is refused until a
+# maintainer sets each one to true/false.
+REVIEW_QUESTIONS = %w[
+  export_compliance_uses_encryption
+  content_rights_contains_third_party_content
+  app_privacy_and_tracking_declared
+].freeze
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def truthy?(value)
+  %w[true 1 yes].include?(value.to_s.strip.downcase)
+end
+
+def missing_env(names)
+  names.reject { |name| ENV[name].to_s.strip != "" }
+end
+
+def require_env!(names)
+  missing = missing_env(names)
+  return if missing.empty?
+
+  UI.user_error!("Missing required secrets/variables: #{missing.join(', ')}. " \
+                 "See docs/ios-app-store-release.md#secrets-and-variables.")
+end
+
+def github_output(values)
+  return unless ENV["GITHUB_OUTPUT"]
+
+  File.open(ENV["GITHUB_OUTPUT"], "a") { |f| values.each { |k, v| f.puts("#{k}=#{v}") } }
+end
+
+def step_summary(markdown)
+  return unless ENV["GITHUB_STEP_SUMMARY"]
+
+  File.open(ENV["GITHUB_STEP_SUMMARY"], "a") { |f| f.puts(markdown, "") }
+end
+
+# Version, build number and bundle IDs come from project.yml (the XcodeGen spec
+# is the single source of truth); nothing here is duplicated by hand.
+def release_info
+  spec = YAML.load_file(PROJECT_SPEC)
+  setting = ->(target, key) { spec.dig("targets", target, "settings", "base", key).to_s }
+
+  version = setting.(APP_TARGET, "MARKETING_VERSION")
+  unless version.match?(/\A\d+\.\d+(\.\d+)?\z/)
+    UI.user_error!("MARKETING_VERSION '#{version}' in project.yml is not a valid App Store version")
+  end
+  widget_version = setting.(WIDGET_TARGET, "MARKETING_VERSION")
+  if widget_version != version
+    UI.user_error!("#{WIDGET_TARGET} MARKETING_VERSION (#{widget_version}) must match " \
+                   "#{APP_TARGET} (#{version}); App Store Connect rejects mismatched extensions.")
+  end
+
+  {
+    version: version,
+    app_id: setting.(APP_TARGET, "PRODUCT_BUNDLE_IDENTIFIER"),
+    widget_id: setting.(WIDGET_TARGET, "PRODUCT_BUNDLE_IDENTIFIER")
+  }
+end
+
+# A tag-triggered release must build exactly the version the tag names.
+def check_release_tag!(version)
+  tag = ENV["RELEASE_TAG"].to_s
+  return if tag.empty?
+  return if tag == "#{TAG_PREFIX}#{version}"
+
+  UI.user_error!("Tag #{tag} does not match MARKETING_VERSION #{version} in project.yml. " \
+                 "Bump project.yml (both targets) in a commit, then tag that commit #{TAG_PREFIX}#{version}.")
+end
+
+def generate_release_notes(version)
+  out_dir = File.join(OUTPUT_DIR, "release_notes")
+  FileUtils.rm_rf(out_dir)
+  args = ["python3", RELEASE_NOTES_SCRIPT,
+          "--output-dir", out_dir,
+          "--tag-pattern", "#{TAG_PREFIX}[0-9]*",
+          "--default-locale", DEFAULT_LOCALE,
+          "--metadata-dir", METADATA_DIR]
+
+  override_dir = File.join(RELEASE_NOTES_OVERRIDE_DIR, version)
+  args += ["--override-dir", override_dir] if File.directory?(override_dir)
+
+  # Workflow input. Written to a file rather than passed on the command line.
+  override_text = ENV["RELEASE_NOTES_OVERRIDE"].to_s
+  unless override_text.strip.empty?
+    override_file = File.join(OUTPUT_DIR, "release_notes_override.txt")
+    FileUtils.mkdir_p(OUTPUT_DIR)
+    File.write(override_file, override_text)
+    args += ["--override-file", override_file]
+  end
+
+  sh(*args, log: false)
+  notes = Dir[File.join(out_dir, "*.txt")].sort.to_h do |path|
+    [File.basename(path, ".txt"), File.read(path).strip]
+  end
+  UI.header("Release notes (#{DEFAULT_LOCALE}, #{notes[DEFAULT_LOCALE].length} chars)")
+  UI.message(notes[DEFAULT_LOCALE])
+  notes
+end
+
+def info_plist_uses_encryption
+  match = File.read(APP_INFO_PLIST).match(%r{<key>ITSAppUsesNonExemptEncryption</key>\s*<(true|false)\s*/>})
+  match && match[1] == "true"
+end
+
+# Returns the review answers, or fails when `strict` and any is unconfirmed.
+def review_config(strict:)
+  config = YAML.load_file(REVIEW_CONFIG) || {}
+  unconfirmed = REVIEW_QUESTIONS.reject { |key| [true, false].include?(config[key]) }
+  unless unconfirmed.empty?
+    message = "review_submission.yml: unconfirmed answers: #{unconfirmed.join(', ')}"
+    strict ? UI.user_error!("#{message}. Submission for review is blocked until a maintainer answers them.") : UI.important(message)
+  end
+
+  plist_value = info_plist_uses_encryption
+  if [true, false].include?(config["export_compliance_uses_encryption"]) &&
+     !plist_value.nil? && config["export_compliance_uses_encryption"] != plist_value
+    UI.user_error!("review_submission.yml says export_compliance_uses_encryption: " \
+                   "#{config['export_compliance_uses_encryption']}, but Info.plist declares " \
+                   "ITSAppUsesNonExemptEncryption = #{plist_value}. Make them agree.")
+  end
+  if config["app_privacy_and_tracking_declared"] == false && strict
+    UI.user_error!("app_privacy_and_tracking_declared is false: complete App Privacy " \
+                   "(including tracking / IDFA) in App Store Connect before submitting.")
+  end
+
+  {
+    automatic_release: config.fetch("automatic_release", false) == true,
+    phased_release: config.fetch("phased_release", false) == true,
+    submission_information: {
+      export_compliance_uses_encryption: config["export_compliance_uses_encryption"],
+      content_rights_contains_third_party_content: config["content_rights_contains_third_party_content"]
+    }.compact
+  }
+end
+
+# Validates metadata/screenshot folders with deliver's own loader, so what
+# passes here is exactly what deliver will accept.
+def validate_store_assets
+  require "deliver"
+
+  metadata_locales = Deliver::Loader.language_folders(METADATA_DIR, false).map(&:basename)
+  screenshots = Deliver::Loader.load_app_screenshots(SCREENSHOTS_DIR, false)
+  by_locale = screenshots.group_by(&:language)
+  by_locale.each do |locale, shots|
+    shots.group_by(&:display_type).each do |type, group|
+      next if group.count <= 10
+
+      UI.user_error!("#{locale}: #{group.count} screenshots for #{type}; App Store Connect accepts at most 10")
+    end
+    types = shots.map(&:display_type)
+    iphone = types.any? { |t| t.to_s.match?(/IPHONE_(67|65)\z/) }
+    ipad = types.any? { |t| t.to_s.match?(/IPAD_PRO_(3GEN_)?129\z/) }
+    UI.important("#{locale}: no 6.9\"/6.5\" iPhone screenshots (required for review)") unless iphone
+    UI.important("#{locale}: no 13\" iPad screenshots (required: the app supports iPad)") unless ipad
+  end
+
+  UI.message("Store metadata locales: #{metadata_locales.empty? ? 'none (listing text is managed in App Store Connect)' : metadata_locales.join(', ')}")
+  UI.message("Screenshots: #{by_locale.empty? ? 'none' : by_locale.map { |l, s| "#{l} (#{s.count})" }.join(', ')}")
+  { metadata_locales: metadata_locales, screenshot_count: screenshots.count }
+end
+
+def report_credentials(names)
+  missing = missing_env(names)
+  if missing.empty?
+    UI.success("All required secrets/variables are present (values not shown)")
+  else
+    UI.important("Not configured in this environment: #{missing.join(', ')}")
+  end
+end
+
+def asc_api_key
+  require_env!(ASC_ENV)
+  app_store_connect_api_key(
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_content: ENV.fetch("ASC_KEY_P8_BASE64"),
+    is_key_content_base64: true,
+    duration: 1200,
+    in_house: false
+  )
+end
+
+# ETHOS_CERT_PINS is the comma-separated SPKI pin list the Android build and
+# the cert-pin monitor already use; iOS takes the current + backup pair.
+def tls_pins
+  pins = ENV["ETHOS_CERT_PINS"].to_s.split(",").map(&:strip).reject(&:empty?)
+  if pins.count < 2
+    UI.user_error!("ETHOS_CERT_PINS must list at least two pins (current,backup); " \
+                   "a Release build must not ship with certificate pinning disabled.")
+  end
+  UI.important("ETHOS_CERT_PINS has #{pins.count} pins; iOS uses the first two") if pins.count > 2
+  # Actions only masks the whole secret; each pin appears on its own in the
+  # xcodebuild command line.
+  pins.each { |pin| puts("::add-mask::#{pin}") } if ENV["GITHUB_ACTIONS"]
+  pins.first(2)
+end
+
+def check_built_pins!(archive_path)
+  app = File.join(archive_path, "Products", "Applications", "#{APP_TARGET}.app")
+  sh("python3", TLS_PINNING_SCRIPT, "--configuration", "Release",
+     "--target", "#{APP_TARGET}:#{File.join(app, 'Info.plist')}",
+     "--target", "#{WIDGET_TARGET}:#{File.join(app, 'PlugIns', "#{WIDGET_TARGET}.appex", 'Info.plist')}")
+end
+
+def generate_xcode_project
+  if `which xcodegen`.strip.empty?
+    UI.important("xcodegen is not installed (it is on the macOS release runner); skipping project generation")
+    return false
+  end
+  FileUtils.mkdir_p(File.dirname(XCODE_PROJECT))
+  Dir.chdir(IOS_ROOT) { sh("xcodegen", "generate", "--project", "Xcode") }
+  true
+end
+
+def configure_match_signing(info)
+  require "match"
+  team_id = ENV.fetch("APPLE_TEAM_IDENTIFIER")
+  [[APP_TARGET, info[:app_id]], [WIDGET_TARGET, info[:widget_id]]].to_h do |target, bundle_id|
+    profile = ENV.fetch(Match::Utils.environment_variable_name_profile_name(app_identifier: bundle_id, type: "appstore"))
+    update_code_signing_settings(
+      path: XCODE_PROJECT,
+      targets: [target],
+      build_configurations: ["Release"],
+      use_automatic_signing: false,
+      team_id: team_id,
+      bundle_identifier: bundle_id,
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile
+    )
+    [bundle_id, profile]
+  end
+end
+
+# ── lanes ────────────────────────────────────────────────────────────────────
+
+platform :ios do
+  desc "Validate the release configuration. Needs no credentials and uploads nothing."
+  desc "Options: submit_for_review:true makes unanswered review questions an error."
+  lane :validate do |options|
+    info = release_info
+    check_release_tag!(info[:version])
+    UI.message("Version #{info[:version]} (#{info[:app_id]}, widget #{info[:widget_id]})")
+    notes = generate_release_notes(info[:version])
+    review = review_config(strict: truthy?(options[:submit_for_review]))
+    assets = validate_store_assets
+    report_credentials(ASC_ENV + SIGNING_ENV + BUILD_ENV)
+    info.merge(release_notes: notes, review: review, assets: assets)
+  end
+
+  desc "Build, sign (fastlane match) and upload to TestFlight (internal testers only)."
+  desc "Options: dry_run:true stops before signing; only an unsigned Release build is made, on macOS."
+  lane :beta do |options|
+    dry_run = truthy?(options[:dry_run])
+    info = validate
+    notes = info[:release_notes]
+
+    if dry_run
+      if generate_xcode_project
+        pins = missing_env(BUILD_ENV).empty? ? tls_pins : ["", ""]
+        build_app(
+          project: XCODE_PROJECT, scheme: SCHEME, configuration: "Release",
+          destination: "generic/platform=iOS", skip_codesigning: true, skip_package_ipa: true,
+          archive_path: File.join(OUTPUT_DIR, "#{SCHEME}.xcarchive"), clean: true,
+          xcargs: "-skipMacroValidation MARKETING_VERSION=#{info[:version]} " \
+                  "TLS_PUBLIC_KEY_PIN_CURRENT=#{pins[0]} TLS_PUBLIC_KEY_PIN_BACKUP=#{pins[1]}"
+        )
+        if pins.all?(&:empty?)
+          UI.important("ETHOS_CERT_PINS not set: skipped the Release pinning check for this dry run")
+        else
+          check_built_pins!(lane_context[SharedValues::XCODEBUILD_ARCHIVE])
+        end
+      end
+      UI.important("DRY RUN: stopping before match / signing / TestFlight upload. " \
+                   "Would upload #{info[:version]} to TestFlight with the release notes above.")
+      github_output(version: info[:version], build_number: "", dry_run: true)
+      step_summary("### TestFlight (dry run)\nValidated #{info[:version]}; nothing was uploaded.")
+      next
+    end
+
+    require_env!(ASC_ENV + SIGNING_ENV + BUILD_ENV)
+    api_key = asc_api_key
+    pins = tls_pins
+    setup_ci if ENV["CI"]
+    generate_xcode_project || UI.user_error!("xcodegen is required to build")
+
+    match(
+      type: "appstore",
+      readonly: true,
+      api_key: api_key,
+      team_id: ENV.fetch("APPLE_TEAM_IDENTIFIER"),
+      app_identifier: [info[:app_id], info[:widget_id]]
+    )
+    profiles = configure_match_signing(info)
+
+    build_number = ENV["BUILD_NUMBER"].to_s.strip
+    if build_number.empty?
+      latest = latest_testflight_build_number(api_key: api_key, app_identifier: info[:app_id], initial_build_number: 0)
+      build_number = (latest.to_i + 1).to_s
+    end
+    UI.message("Building #{info[:version]} (#{build_number})")
+
+    ipa = build_app(
+      project: XCODE_PROJECT, scheme: SCHEME, configuration: "Release",
+      output_directory: OUTPUT_DIR, clean: true,
+      export_method: "app-store",
+      export_options: { provisioningProfiles: profiles, teamID: ENV.fetch("APPLE_TEAM_IDENTIFIER") },
+      xcargs: "-skipMacroValidation MARKETING_VERSION=#{info[:version]} CURRENT_PROJECT_VERSION=#{build_number} " \
+              "TLS_PUBLIC_KEY_PIN_CURRENT=#{pins[0]} TLS_PUBLIC_KEY_PIN_BACKUP=#{pins[1]}"
+    )
+    check_built_pins!(lane_context[SharedValues::XCODEBUILD_ARCHIVE])
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ipa,
+      changelog: notes[DEFAULT_LOCALE],
+      distribute_external: false,
+      # Waits only until the build appears (so the changelog can be set);
+      # `app_store` waits for processing itself before submitting.
+      skip_waiting_for_build_processing: true
+    )
+
+    github_output(version: info[:version], build_number: build_number, dry_run: false)
+    step_summary("### TestFlight\nUploaded #{info[:version]} (#{build_number}) for internal testing.")
+  end
+
+  desc "Update the App Store version: release notes, and optionally metadata, screenshots and review submission."
+  desc "Options: build_number:N submit_for_review:true upload_metadata:true upload_screenshots:true dry_run:true"
+  lane :app_store do |options|
+    dry_run = truthy?(options[:dry_run])
+    submit = truthy?(options[:submit_for_review])
+    upload_metadata = truthy?(options[:upload_metadata])
+    upload_screenshots = truthy?(options[:upload_screenshots])
+    build_number = options[:build_number].to_s.strip
+
+    info = validate(submit_for_review: submit)
+    UI.user_error!("submit_for_review:true needs build_number:<the TestFlight build>") if submit && build_number.empty?
+    # overwrite_screenshots clears the existing sets first, so an empty folder
+    # would wipe the listing's screenshots; refuse instead.
+    if upload_screenshots && info[:assets][:screenshot_count].zero?
+      UI.user_error!("upload_screenshots:true but #{SCREENSHOTS_DIR} has no screenshots")
+    end
+    if upload_metadata && info[:assets][:metadata_locales].empty?
+      UI.user_error!("upload_metadata:true but #{METADATA_DIR} has no locale folders")
+    end
+
+    plan = []
+    plan << "set What's New for #{info[:version]}"
+    plan << "upload metadata (#{info[:assets][:metadata_locales].join(', ')})" if upload_metadata
+    plan << "replace screenshots (#{info[:assets][:screenshot_count]} files)" if upload_screenshots
+    plan << "submit build #{build_number} for review (automatic_release: #{info[:review][:automatic_release]})" if submit
+    if dry_run
+      UI.important("DRY RUN: would #{plan.join('; ')}. Stopping before any App Store Connect call.")
+      step_summary("### App Store (dry run)\nWould #{plan.join('; ')}.")
+      next
+    end
+
+    api_key = asc_api_key
+    review = info[:review]
+
+    # "What's New" cannot be set on an app's first version; App Store Connect
+    # rejects it, so only send release notes once a version is live.
+    app = Spaceship::ConnectAPI::App.find(info[:app_id]) ||
+          UI.user_error!("#{info[:app_id]} not found in App Store Connect (create the app record first)")
+    first_release = app.get_live_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS).nil?
+    UI.important("No live version yet: skipping What's New (not allowed on a first release)") if first_release
+
+    # Only files that exist are uploaded; an empty directory touches nothing, so
+    # the listing text is never changed unless upload_metadata is set.
+    empty_metadata = File.join(OUTPUT_DIR, "empty_metadata")
+    FileUtils.mkdir_p(empty_metadata)
+
+    deliver(
+      api_key: api_key,
+      app_identifier: info[:app_id],
+      app_version: info[:version],
+      build_number: submit ? build_number : nil,
+      skip_binary_upload: true,
+      skip_metadata: first_release && !upload_metadata,
+      metadata_path: upload_metadata ? METADATA_DIR : empty_metadata,
+      release_notes: first_release ? nil : info[:release_notes],
+      skip_screenshots: !upload_screenshots,
+      screenshots_path: SCREENSHOTS_DIR,
+      overwrite_screenshots: upload_screenshots,
+      submit_for_review: submit,
+      automatic_release: review[:automatic_release],
+      phased_release: review[:phased_release],
+      submission_information: review[:submission_information],
+      run_precheck_before_submit: true,
+      # Precheck cannot inspect in-app purchases when authenticated with an API key.
+      precheck_include_in_app_purchases: false,
+      force: true # non-interactive: skip the HTML preview confirmation
+    )
+
+    step_summary("### App Store\nDone: #{plan.join('; ')}.")
+  end
+end
