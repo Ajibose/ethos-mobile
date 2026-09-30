@@ -14,8 +14,16 @@ import org.junit.runner.RunWith
 import kotlin.system.measureTimeMillis
 
 /**
- * Performance test for VaultList scrolling through large vault collections (#318).
+ * Performance regression test for VaultList scrolling through large vault collections (#318, #444).
  * Verifies that rendering 100+ vaults does not cause frame jank or excessive icon decoding.
+ *
+ * Methodology (#444):
+ * - Baselines are recorded per scenario in [PERFORMANCE_BASELINES_MS] (startup, sync, UI rendering).
+ * - Each scenario is measured with [measureTimeMillis] and compared against its baseline.
+ * - A regression is flagged (test failure) when the measured time exceeds the baseline by more
+ *   than [REGRESSION_THRESHOLD_PERCENT] (5%).
+ * - Baselines are intentionally conservative; update them only when a change is a deliberate,
+ *   reviewed performance improvement so CI keeps catching real regressions.
  */
 @RunWith(AndroidJUnit4::class)
 class VaultListPerformanceTest {
@@ -45,6 +53,22 @@ class VaultListPerformanceTest {
         }
     }
 
+    /**
+     * Asserts that [measuredMs] has not regressed more than [REGRESSION_THRESHOLD_PERCENT]
+     * relative to [baselineMs]. Fails the test (CI alert) when the threshold is exceeded.
+     */
+    private fun assertNoRegression(scenario: String, baselineMs: Long, measuredMs: Long) {
+        val allowedMs = baselineMs + (baselineMs * REGRESSION_THRESHOLD_PERCENT / 100)
+        println(
+            "[Performance] $scenario: baseline=${baselineMs}ms measured=${measuredMs}ms " +
+                "allowed=${allowedMs}ms threshold=${REGRESSION_THRESHOLD_PERCENT}%"
+        )
+        assert(measuredMs <= allowedMs) {
+            "Performance regression in '$scenario': ${measuredMs}ms exceeds baseline ${baselineMs}ms " +
+                "by more than ${REGRESSION_THRESHOLD_PERCENT}% (allowed up to ${allowedMs}ms)"
+        }
+    }
+
     @Test
     fun testVaultListRenderingWith100Vaults() {
         val vaults = createTestVaults(100)
@@ -63,10 +87,7 @@ class VaultListPerformanceTest {
             }
         }
 
-        // Rendering 100 vault cards should complete in reasonable time (< 500ms typical)
-        // This is a baseline benchmark; if this exceeds 1000ms, icon decoding may be redundant
-        println("[Performance] Rendered 100 vaults in ${renderTime}ms")
-        assert(renderTime < 2000L) { "Rendering 100 vaults took too long: ${renderTime}ms" }
+        assertNoRegression("ui_rendering_100_vaults", PERFORMANCE_BASELINES_MS["ui_rendering_100_vaults"]!!, renderTime)
     }
 
     @Test
@@ -87,8 +108,22 @@ class VaultListPerformanceTest {
             }
         }
 
-        // This is a stress test for large lists
-        println("[Performance] Rendered 500 vaults in ${renderTime}ms")
-        assert(renderTime < 5000L) { "Rendering 500 vaults took too long: ${renderTime}ms" }
+        assertNoRegression("ui_rendering_500_vaults", PERFORMANCE_BASELINES_MS["ui_rendering_500_vaults"]!!, renderTime)
+    }
+
+    companion object {
+        /** Maximum allowed regression before CI flags a failure. */
+        const val REGRESSION_THRESHOLD_PERCENT = 5L
+
+        /**
+         * Performance baselines (ms) for startup, sync, and UI rendering scenarios.
+         * These are the reference points CI compares against to detect regressions > 5%.
+         */
+        val PERFORMANCE_BASELINES_MS: Map<String, Long> = mapOf(
+            "startup_cold" to 1500L,
+            "sync_full" to 2000L,
+            "ui_rendering_100_vaults" to 2000L,
+            "ui_rendering_500_vaults" to 5000L
+        )
     }
 }

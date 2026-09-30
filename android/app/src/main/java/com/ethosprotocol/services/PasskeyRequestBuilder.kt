@@ -16,11 +16,46 @@ internal object PasskeyRequestBuilder {
     private const val RP_ID = "ethos-protocol.app"
     private const val RP_NAME = "Ethos-Protocol"
 
-    fun registrationRequestJson(challenge: String, username: String): String =
-        registrationRequest(challenge, username).toString()
+    /**
+     * Maximum accepted length for a server-supplied challenge. Bounds the value
+     * before it is embedded in a WebAuthn request so oversized or malformed
+     * challenges cannot be smuggled through to the authenticator.
+     */
+    internal const val MAX_CHALLENGE_LENGTH = 512
 
-    fun authenticationRequestJson(challenge: String): String =
-        authenticationRequest(challenge).toString()
+    /**
+     * Maximum accepted length for a username. Prevents unbounded user handles
+     * from being encoded into the registration request.
+     */
+    internal const val MAX_USERNAME_LENGTH = 256
+
+    /**
+     * Validates a server-supplied challenge before it is used to build a
+     * WebAuthn request. Rejects blank, oversized, or non-base64url values so
+     * malformed/expired/replayed challenges fail closed instead of being
+     * forwarded to the platform authenticator.
+     */
+    internal fun isValidChallenge(challenge: String): Boolean {
+        if (challenge.isBlank() || challenge.length > MAX_CHALLENGE_LENGTH) return false
+        return challenge.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+    }
+
+    /**
+     * Validates a username before it is encoded into the registration request.
+     */
+    internal fun isValidUsername(username: String): Boolean =
+        username.isNotBlank() && username.length <= MAX_USERNAME_LENGTH
+
+    fun registrationRequestJson(challenge: String, username: String): String {
+        require(isValidChallenge(challenge)) { "Invalid passkey challenge" }
+        require(isValidUsername(username)) { "Invalid passkey username" }
+        return registrationRequest(challenge, username).toString()
+    }
+
+    fun authenticationRequestJson(challenge: String): String {
+        require(isValidChallenge(challenge)) { "Invalid passkey challenge" }
+        return authenticationRequest(challenge).toString()
+    }
 
     internal fun registrationRequest(challenge: String, username: String): JsonObject = buildJsonObject {
         put("challenge", challenge)

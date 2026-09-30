@@ -29,6 +29,33 @@ class BiometricHelper(private val activity: FragmentActivity) {
         object Unknown : EnrollmentStatus()
     }
 
+    /**
+     * Security-relevant outcome of a biometric authentication attempt.
+     *
+     * Exposed so callers (and security tests) can assert on the exact failure
+     * mode without depending on platform error strings, which are not stable
+     * across OEMs and API levels.
+     */
+    enum class AuthFailure {
+        /** The user dismissed/cancelled the prompt. */
+        USER_CANCELLED,
+
+        /** Too many failed attempts; biometrics are temporarily locked out. */
+        LOCKOUT,
+
+        /** No biometrics are enrolled on the device. */
+        NOT_ENROLLED,
+
+        /** Biometric hardware is missing or currently unavailable. */
+        HARDWARE_UNAVAILABLE,
+
+        /** A single attempt was not recognised; the user may retry. */
+        NOT_RECOGNISED,
+
+        /** Any other platform error. */
+        UNKNOWN,
+    }
+
     fun isAvailable(): Boolean {
         return enrollmentStatus() == EnrollmentStatus.Enrolled
     }
@@ -97,16 +124,33 @@ class BiometricHelper(private val activity: FragmentActivity) {
         onSuccess: () -> Unit,
         onError: (String) -> Unit,
     ) {
+        authenticate(title, subtitle, onSuccess, onError, onFailure = {})
+    }
+
+    /**
+     * Authenticates with a structured failure callback so security tests can
+     * assert on specific biometric failure scenarios (cancel, lockout, no
+     * enrolled biometrics, hardware unavailable) rather than parsing strings.
+     */
+    fun authenticate(
+        title: String,
+        subtitle: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+        onFailure: (AuthFailure) -> Unit,
+    ) {
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 onSuccess()
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                onFailure(mapErrorCode(errorCode))
                 onError(errString.toString())
             }
 
             override fun onAuthenticationFailed() {
+                onFailure(AuthFailure.NOT_RECOGNISED)
                 onError("Biometric not recognised — please try again.")
             }
         }
@@ -120,5 +164,28 @@ class BiometricHelper(private val activity: FragmentActivity) {
             .build()
 
         prompt.authenticate(promptInfo)
+    }
+
+    companion object {
+        /**
+         * Maps a platform [BiometricPrompt] error code to a stable
+         * [AuthFailure] so security tests can assert on failure scenarios
+         * without relying on OEM-specific error strings.
+         */
+        fun mapErrorCode(errorCode: Int): AuthFailure = when (errorCode) {
+            BiometricPrompt.ERROR_USER_CANCELED,
+            BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+            BiometricPrompt.ERROR_CANCELED -> AuthFailure.USER_CANCELLED
+
+            BiometricPrompt.ERROR_LOCKOUT,
+            BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> AuthFailure.LOCKOUT
+
+            BiometricPrompt.ERROR_NO_BIOMETRICS -> AuthFailure.NOT_ENROLLED
+
+            BiometricPrompt.ERROR_HW_NOT_PRESENT,
+            BiometricPrompt.ERROR_HW_UNAVAILABLE -> AuthFailure.HARDWARE_UNAVAILABLE
+
+            else -> AuthFailure.UNKNOWN
+        }
     }
 }

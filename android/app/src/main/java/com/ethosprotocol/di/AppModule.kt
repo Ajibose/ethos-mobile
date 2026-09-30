@@ -29,12 +29,24 @@ object AppModule {
     @Provides @Singleton
     fun provideTokenProvider(impl: EncryptedTokenProvider): TokenProvider = impl
 
+    /**
+     * Base URL used by [ApiClient].
+     *
+     * Integration tests (see `androidTest` integration suite) point this at a
+     * real test API environment via the `API_BASE_URL` build config field so
+     * the suite exercises the live API instead of mocks. Production builds
+     * keep the default value from `BuildConfig`.
+     */
+    @Provides @Singleton
+    fun provideApiBaseUrl(): String = BuildConfig.API_BASE_URL
+
     @Provides @Singleton
     fun provideApiClient(
         tokenProvider: TokenProvider,
         networkMonitor: NetworkMonitor,
-        offlineCache: OfflineCache
-    ): ApiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, BuildConfig.API_BASE_URL)
+        offlineCache: OfflineCache,
+        apiBaseUrl: String
+    ): ApiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, apiBaseUrl)
 
     @Provides @Singleton
     fun providePendingActionDatabase(@ApplicationContext context: Context): PendingActionDatabase =

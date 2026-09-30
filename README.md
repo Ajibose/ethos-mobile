@@ -329,3 +329,8 @@ Documentation: snapshot/test guidance is in the project docs
 
 ### Accessibility testing is already in place
 This repo already satisfies the requested accessibility-testing work
+
+## Handsoff notes
+
+<!-- handsoff-issue-443 -->
+- #443: Add Memory Leak Detection Tests
