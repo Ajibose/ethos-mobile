@@ -1,5 +1,7 @@
 package com.ethosprotocol.services
 
+// ADR-0003: CredentialManager for Android passkeys — see docs/adr/adr-0003-credentialmanager-android-passkeys.md
+
 import android.app.Activity
 import android.content.Context
 import android.content.Intent

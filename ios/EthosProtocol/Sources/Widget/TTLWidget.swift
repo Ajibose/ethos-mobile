@@ -1,6 +1,7 @@
 import WidgetKit
 import SwiftUI
 import AppIntents
+// ADR-0002: WidgetKit for iOS widgets — see docs/adr/adr-0002-widgetkit-ios-widgets.md
 // The SPM package (Package.swift) compiles TTLWidget as a separate module
 // that depends on the EthosProtocol library product, so APIClient/Vault
 // need an explicit import there. The XcodeGen-generated app-extension
