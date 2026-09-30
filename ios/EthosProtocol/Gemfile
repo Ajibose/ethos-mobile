@@ -1,0 +1,8 @@
+# frozen_string_literal: true
+
+# Release tooling for the iOS App Store pipeline (see docs/ios-app-store-release.md).
+# Pinned to an exact version so CI and local runs resolve the same fastlane;
+# bump deliberately and commit the regenerated Gemfile.lock.
+source "https://rubygems.org"
+
+gem "fastlane", "2.240.1"
