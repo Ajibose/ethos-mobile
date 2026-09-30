@@ -4,14 +4,18 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultEvent
 import com.ethosprotocol.models.VaultStatus
+import com.ethosprotocol.services.ExpiringVaultsManager
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.VaultEventSocket
 import com.ethosprotocol.ui.VaultViewModel
 import io.mockk.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -40,12 +44,27 @@ class VaultWebSocketOptimizationTest {
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private val vaultEventSocket: VaultEventSocket = mockk()
+    private val expiringVaultsManager: ExpiringVaultsManager = mockk(relaxed = true)
+    private val offlineCache: OfflineCache = mockk(relaxed = true)
+    private val fakeNetworkMonitor = FakeNetworkMonitor(startOnline = true)
     private lateinit var context: Context
 
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        every { expiringVaultsManager.bannerState } returns MutableStateFlow(null).asStateFlow()
     }
+
+    private fun makeVm() = VaultViewModel(
+        apiClient = apiClient,
+        notificationHelper = notificationHelper,
+        pendingActionDao = pendingActionDao,
+        vaultEventSocket = vaultEventSocket,
+        expiringVaultsManager = expiringVaultsManager,
+        offlineCache = offlineCache,
+        networkMonitor = fakeNetworkMonitor,
+        context = context
+    )
 
     @Test
     fun `single vault WebSocket event updates vault in place without full refetch`() = runTest {
@@ -74,13 +93,7 @@ class VaultWebSocketOptimizationTest {
         }
         coEvery { vaultEventSocket.events("vault-2") } returns flow { }
 
-        val vm = VaultViewModel(
-            apiClient = apiClient,
-            notificationHelper = notificationHelper,
-            pendingActionDao = pendingActionDao,
-            vaultEventSocket = vaultEventSocket,
-            context = context
-        )
+        val vm = makeVm()
 
         // Load initial list
         vm.load()
@@ -123,13 +136,7 @@ class VaultWebSocketOptimizationTest {
             }
         }
 
-        val vm = VaultViewModel(
-            apiClient = apiClient,
-            notificationHelper = notificationHelper,
-            pendingActionDao = pendingActionDao,
-            vaultEventSocket = vaultEventSocket,
-            context = context
-        )
+        val vm = makeVm()
 
         vm.load()
         Thread.sleep(100)
@@ -162,13 +169,7 @@ class VaultWebSocketOptimizationTest {
 
         coEvery { vaultEventSocket.events(any()) } returns flow { }
 
-        val vm = VaultViewModel(
-            apiClient = apiClient,
-            notificationHelper = notificationHelper,
-            pendingActionDao = pendingActionDao,
-            vaultEventSocket = vaultEventSocket,
-            context = context
-        )
+        val vm = makeVm()
 
         vm.load()
         coVerify(exactly = 1) { apiClient.listVaults() }

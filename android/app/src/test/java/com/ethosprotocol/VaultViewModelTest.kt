@@ -8,7 +8,9 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.services.ConnectionState
+import com.ethosprotocol.services.ExpiringVaultsManager
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -39,6 +41,9 @@ class VaultViewModelTest {
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private val vaultEventSocket: VaultEventSocket = mockk()
+    private val expiringVaultsManager: ExpiringVaultsManager = mockk(relaxed = true)
+    private val offlineCache: OfflineCache = mockk(relaxed = true)
+    private val fakeNetworkMonitor = FakeNetworkMonitor(startOnline = true)
     private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
 
@@ -50,7 +55,17 @@ class VaultViewModelTest {
         every { vaultEventSocket.events(any<String>()) } returns emptyFlow()
         every { vaultEventSocket.events(any<List<String>>()) } returns emptyFlow()
         every { vaultEventSocket.connectionState } returns MutableStateFlow(ConnectionState.DISCONNECTED).asStateFlow()
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
+        every { expiringVaultsManager.bannerState } returns MutableStateFlow(null).asStateFlow()
+        vm = VaultViewModel(
+            apiClient = apiClient,
+            notificationHelper = notificationHelper,
+            pendingActionDao = pendingActionDao,
+            vaultEventSocket = vaultEventSocket,
+            expiringVaultsManager = expiringVaultsManager,
+            offlineCache = offlineCache,
+            networkMonitor = fakeNetworkMonitor,
+            context = context
+        )
     }
 
     @After

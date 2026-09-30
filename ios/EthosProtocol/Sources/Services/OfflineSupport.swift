@@ -1,6 +1,8 @@
 import Network
 import Foundation
 
+// ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
+
 /// Abstracts NWPathMonitor so NetworkMonitor's cold-start behavior can be exercised in tests
 /// without a real network stack. NWPath itself has no public initializer, so tests can't
 /// construct one to fake `pathUpdateHandler` callbacks — this narrows the surface to the two

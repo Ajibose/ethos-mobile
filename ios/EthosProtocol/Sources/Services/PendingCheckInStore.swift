@@ -1,6 +1,8 @@
 import Foundation
 import os.log
 
+// ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
+
 // MARK: - PendingCheckIn
 
 /// A single queued check-in that could not be delivered while the device was offline.

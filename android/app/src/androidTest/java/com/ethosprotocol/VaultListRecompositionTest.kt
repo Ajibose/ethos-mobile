@@ -9,10 +9,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultStatus
+import com.ethosprotocol.services.ExpiringVaultsManager
 import com.ethosprotocol.ui.VaultViewModel
 import io.mockk.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
@@ -54,12 +58,17 @@ class VaultListRecompositionTest {
         )
 
         var recompositionCount = 0
+        val expiringVaultsManager: ExpiringVaultsManager = mockk(relaxed = true)
+        every { expiringVaultsManager.bannerState } returns MutableStateFlow(null).asStateFlow()
         val vm = VaultViewModel(
             apiClient = apiClient,
             notificationHelper = mockk(relaxed = true),
             pendingActionDao = mockk(relaxed = true),
             vaultEventSocket = mockk(relaxed = true),
-            context = context
+            expiringVaultsManager = expiringVaultsManager,
+            offlineCache = mockk(relaxed = true),
+            networkMonitor = FakeNetworkMonitor(startOnline = true),
+            context = InstrumentationRegistry.getInstrumentation().targetContext
         )
 
         composeRule.setContent {

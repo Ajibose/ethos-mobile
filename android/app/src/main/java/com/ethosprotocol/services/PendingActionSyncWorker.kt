@@ -1,5 +1,7 @@
 package com.ethosprotocol.services
 
+// ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
+
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log

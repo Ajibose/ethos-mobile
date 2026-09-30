@@ -1,8 +1,12 @@
 package com.ethosprotocol.api
 
+// ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
+
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.ethosprotocol.models.AuthToken
@@ -18,6 +22,10 @@ import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
  * Quality tier derived from the active network. Higher tiers allow larger images and page sizes;
@@ -44,7 +52,9 @@ enum class QualityPreference {
 
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
-    val isConnected: Boolean
+
+    /** Snapshot check — true when there is an active network with internet capability. */
+    open val isConnected: Boolean
         get() {
             val cm = context.getSystemService(ConnectivityManager::class.java)
             val network = cm.activeNetwork ?: return false

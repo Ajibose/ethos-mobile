@@ -18,6 +18,7 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.MainActivity
 import com.ethosprotocol.utils.DateTimeFormatter
+import com.ethosprotocol.utils.WidgetErrorLogger
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.time.Duration
@@ -58,6 +59,8 @@ class VaultStatusWidget : AppWidgetProvider() {
         private const val KEY_LAST_CHECK_IN = "last_check_in"
         const val KEY_BALANCE = "balance"
         const val KEY_BENEFICIARY = "beneficiary"
+        // #435: persists whether the last refresh attempt failed
+        private const val KEY_HAS_ERROR = "has_error"
 
         // Selected-vault key stored in per-widget prefs; written by VaultWidgetConfigActivity.
         private const val KEY_SELECTED_VAULT_ID = "selected_vault_id"
@@ -88,7 +91,8 @@ class VaultStatusWidget : AppWidgetProvider() {
             ttlRemaining: String,
             lastCheckIn: String,
             balance: String,
-            beneficiary: String
+            beneficiary: String,
+            hasError: Boolean = false  // #435
         ) {
             context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
                 .putString(KEY_VAULT_ID, vaultId)
@@ -97,6 +101,7 @@ class VaultStatusWidget : AppWidgetProvider() {
                 .putString(KEY_LAST_CHECK_IN, lastCheckIn)
                 .putString(KEY_BALANCE, balance)
                 .putString(KEY_BENEFICIARY, beneficiary)
+                .putBoolean(KEY_HAS_ERROR, hasError)  // #435
                 .apply()
         }
 
@@ -198,6 +203,7 @@ class VaultStatusWidget : AppWidgetProvider() {
             val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, context.getString(R.string.widget_last_checkin_never)) ?: context.getString(R.string.widget_last_checkin_never)
             val balance = prefs.getString(KEY_BALANCE, "—") ?: "—"
             val beneficiary = prefs.getString(KEY_BENEFICIARY, "—") ?: "—"
+            val hasError = prefs.getBoolean(KEY_HAS_ERROR, false)  // #435
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -205,6 +211,7 @@ class VaultStatusWidget : AppWidgetProvider() {
                     data = Uri.parse(deepLinkUri(vaultId))
                 }
             }
+
             val pendingIntent = PendingIntent.getActivity(
                 context, widgetId, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -227,6 +234,23 @@ class VaultStatusWidget : AppWidgetProvider() {
                 setTextViewText(R.id.widget_beneficiary, beneficiary)
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
 
+                // #435: Show/hide the error indicator based on last sync result.
+                // widget_error_indicator is declared GONE by default in vault_widget.xml.
+                setViewVisibility(
+                    R.id.widget_error_indicator,
+                    if (hasError) android.view.View.VISIBLE else android.view.View.GONE
+                )
+
+                // #439: If vault_widget.xml does NOT yet have a res/layout-night/ variant,
+                // apply programmatic dark/light overrides here.  These mirror the colours in
+                // WidgetScreenshotTest (VaultWidgetPreview):
+                //   Dark  background : 0xFF1C1C1E  (matches existing XML dark bg)
+                //   Light background : 0xFFFFFFFF  (standard light surface)
+                //   Dark  text       : 0xFFEBEBF5  (iOS-aligned off-white)
+                //   Light text       : 0xFF1C1C1E  (dark label)
+                //
+                // Remove these overrides once res/layout-night/vault_widget.xml is added and
+                // the XML handles colour selection automatically via night-mode qualifiers.
                 if (isDarkMode) {
                     setInt(R.id.widget_root, "setBackgroundColor", 0xFF1C1C1E.toInt())
                 } else {
@@ -294,6 +318,15 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
         if (result is ApiResult.Success) {
             val vaults = result.data.filter { it.status == VaultStatus.active }
 
+            // #438: Log a data-refresh failure when the API succeeds but returns no
+            // active vaults — the call worked but the widget has nothing useful to show.
+            if (vaults.isEmpty()) {
+                WidgetErrorLogger.logDataRefreshFailure(
+                    "Data refresh returned no active vaults (total: ${result.data.size})"
+                )
+                return Result.success()
+            }
+
             // Pick the active vault with the lowest ttlRemaining as the urgency fallback.
             // Individual widget instances may override this with a pinned vault ID (#245/#246).
             val urgentVault = vaults.minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
@@ -342,19 +375,36 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                     ttlRemaining = formatTtl(applicationContext, vault.ttlRemaining),
                     lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn, applicationContext),
                     balance = vault.formattedBalance,
-                    beneficiary = vault.beneficiary.take(12) + "…"
+                    beneficiary = vault.beneficiary.take(12) + "…",
+                    hasError = false  // #435: clear error state on successful refresh
                 )
                 VaultStatusWidget.updateWidget(applicationContext, manager, widgetId)
             }
 
-            // #431: Use the most conservative (shortest) refresh interval across all widget
-            // instances so urgency is never missed. Worker schedule re-enqueue uses UPDATE
-            // policy so only one periodic task runs at a time.
-            val shortestConfiguredInterval = ids.minOfOrNull { widgetId ->
-                VaultStatusWidget.getRefreshIntervalMinutes(applicationContext, widgetId).toLong()
-            } ?: NORMAL_INTERVAL_MINUTES
-            val urgencyInterval = determineUpdateInterval(urgentVault.ttlRemaining)
-            schedule(applicationContext, minOf(urgencyInterval, shortestConfiguredInterval))
+            schedule(applicationContext, determineUpdateInterval(urgentVault.ttlRemaining))
+        } else {
+            // #438: Log a load failure for any non-Success result (network unavailable
+            // or API error) so it surfaces in Logcat and Firebase Performance.
+            val reason = when (result) {
+                is ApiResult.NetworkUnavailable -> "Network unavailable"
+                is ApiResult.Error -> "API error ${result.code}: ${result.message}"
+                else -> result::class.simpleName ?: "Unknown error"
+            }
+            WidgetErrorLogger.logLoadFailure(reason)
+
+            // #435: Mark all widget instances as having an error so the error indicator
+            // is displayed until the next successful refresh.
+            val manager = AppWidgetManager.getInstance(applicationContext)
+            val ids = manager.getAppWidgetIds(
+                ComponentName(applicationContext, VaultStatusWidget::class.java)
+            )
+            ids.forEach { widgetId ->
+                val prefs = applicationContext.getSharedPreferences(
+                    "vault_widget_prefs_$widgetId", android.content.Context.MODE_PRIVATE
+                )
+                prefs.edit().putBoolean("has_error", true).apply()
+                VaultStatusWidget.updateWidget(applicationContext, manager, widgetId)
+            }
         }
         return Result.success()
     }

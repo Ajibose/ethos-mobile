@@ -3,10 +3,12 @@ package com.ethosprotocol
 import android.content.Context
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultEvent
 import com.ethosprotocol.models.VaultPage
 import com.ethosprotocol.models.VaultStatus
+import com.ethosprotocol.services.ExpiringVaultsManager
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
@@ -18,6 +20,8 @@ import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
 import org.junit.After
@@ -41,6 +45,9 @@ class VaultWidgetRefreshOnSocketEventTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val expiringVaultsManager: ExpiringVaultsManager = mockk(relaxed = true)
+    private val offlineCache: OfflineCache = mockk(relaxed = true)
+    private val fakeNetworkMonitor = FakeNetworkMonitor(startOnline = true)
     private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
     private lateinit var socketFlow: MutableSharedFlow<VaultEvent>
@@ -57,11 +64,21 @@ class VaultWidgetRefreshOnSocketEventTest {
         every { VaultStatusWidget.formatLastCheckIn(any(), any()) } answers { callOriginal() }
         mockkObject(VaultWidgetUpdateWorker.Companion)
         every { VaultWidgetUpdateWorker.schedule(any(), any()) } just Runs
+        every { expiringVaultsManager.bannerState } returns MutableStateFlow(null).asStateFlow()
 
         socketFlow = MutableSharedFlow(extraBufferCapacity = 8)
         every { vaultEventSocket.events(any()) } returns socketFlow
 
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
+        vm = VaultViewModel(
+            apiClient = apiClient,
+            notificationHelper = notificationHelper,
+            pendingActionDao = pendingActionDao,
+            vaultEventSocket = vaultEventSocket,
+            expiringVaultsManager = expiringVaultsManager,
+            offlineCache = offlineCache,
+            networkMonitor = fakeNetworkMonitor,
+            context = context
+        )
     }
 
     @After

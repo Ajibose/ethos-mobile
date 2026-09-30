@@ -13,6 +13,7 @@ import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
@@ -587,7 +588,8 @@ class VaultViewModel @Inject constructor(
     private val pendingActionDao: PendingActionDao,
     private val vaultEventSocket: VaultEventSocket,
     private val expiringVaultsManager: com.ethosprotocol.services.ExpiringVaultsManager,
-    private val offlineCache: com.ethosprotocol.api.OfflineCache,
+    private val offlineCache: OfflineCache,
+    private val networkMonitor: NetworkMonitor,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -598,6 +600,26 @@ class VaultViewModel @Inject constructor(
 
     private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
+
+    init {
+        // #428: Observe network reachability. When connectivity is restored after an
+        // offline period, immediately:
+        //   1. Reload vaults so the list reflects current server state.
+        //   2. Trigger PendingActionSyncWorker to drain any queued offline actions.
+        // The distinctUntilChanged() in connectivityFlow prevents spurious reloads on
+        // repeated true emissions (e.g. capability changes on the same network).
+        viewModelScope.launch {
+            networkMonitor.connectivityFlow.collect { isOnline ->
+                val wasOffline = _state.value.isOffline
+                _state.update { it.copy(isOffline = !isOnline) }
+                if (isOnline && wasOffline) {
+                    // Back online — reload and drain the pending-action queue.
+                    load()
+                    com.ethosprotocol.services.PendingActionSyncWorker.schedule(context)
+                }
+            }
+        }
+    }
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
