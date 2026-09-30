@@ -63,6 +63,29 @@ struct VaultEntry: TimelineEntry {
     let isExpiringSoon: Bool
     let balance: String
     let beneficiary: String
+    /// #435: True when the last data fetch failed — widget shows an error indicator
+    /// and a tap-to-open-app affordance so the user can force a refresh.
+    let hasError: Bool
+
+    init(
+        date: Date,
+        vaultID: String,
+        vaultName: String,
+        ttlRemaining: UInt64?,
+        isExpiringSoon: Bool,
+        balance: String = "—",
+        beneficiary: String = "—",
+        hasError: Bool = false
+    ) {
+        self.date = date
+        self.vaultID = vaultID
+        self.vaultName = vaultName
+        self.ttlRemaining = ttlRemaining
+        self.isExpiringSoon = isExpiringSoon
+        self.balance = balance
+        self.beneficiary = beneficiary
+        self.hasError = hasError
+    }
 }
 
 // MARK: - Timeline Provider
@@ -100,6 +123,15 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
             let vaults = try await APIClient.shared.listAllVaults()
             let activeVaults = vaults.filter { $0.status == .active }
 
+            // #438: Log a data-refresh failure when there are no active vaults to display.
+            // This is distinct from a network error — the API call succeeded but returned
+            // no usable data, which is worth tracking separately for debugging.
+            if activeVaults.isEmpty {
+                WidgetErrorLogger.shared.logDataRefreshFailure(
+                    message: "Data refresh returned no active vaults (total vaults: \(vaults.count))"
+                )
+            }
+
             // If the intent specifies a vault ID, try to find that vault.
             // Otherwise fall back to the most-urgent vault (lowest ttlRemaining).
             let selected: Vault?
@@ -120,6 +152,11 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
                 beneficiary: selected.map { String($0.beneficiary.prefix(12)) + "…" } ?? "—"
             )
         } catch {
+            // #438: Log the load failure so it surfaces in the system Console
+            // and contributes to the rolling widget error metrics.
+            WidgetErrorLogger.shared.logLoadFailure(
+                message: error.localizedDescription
+            )
             entry = VaultEntry(
                 date: .now,
                 vaultID: "",
@@ -127,7 +164,8 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
                 ttlRemaining: nil,
                 isExpiringSoon: false,
                 balance: "—",
-                beneficiary: "—"
+                beneficiary: "—",
+                hasError: true  // #435: show error indicator in widget
             )
         }
 
@@ -177,6 +215,31 @@ struct TTLWidgetView: View {
         colorScheme == .dark ? .cyan : .blue
     }
 
+    // MARK: #435 — Error banner
+    /// Shown at the top of every size variant when `entry.hasError == true`.
+    /// The widget URL (tap-to-open-app) doubles as the tap-to-retry affordance —
+    /// opening the app lets the user trigger a manual refresh which reloads the timeline.
+    @ViewBuilder
+    private var errorBanner: some View {
+        if entry.hasError {
+            Label {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(LocalizedStrings.widgetErrorTitle)
+                        .font(.caption2.bold())
+                    Text(LocalizedStrings.widgetErrorMessage)
+                        .font(.caption2)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .foregroundStyle(.red)
+            }
+            .font(.caption2)
+            .foregroundStyle(.red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Sync failed. Tap to retry.")
+        }
+    }
+
     var body: some View {
         switch family {
         case .systemSmall:
@@ -185,8 +248,12 @@ struct TTLWidgetView: View {
             mediumView
         case .systemLarge:
             largeView
-        case .accessoryRectangular, .accessoryCircular:
-            compactView
+        case .accessoryRectangular:
+            // #436: Lock screen rectangular view — vault name + TTL, no balance/beneficiary
+            TTLAccessoryRectangularView(entry: entry)
+        case .accessoryCircular:
+            // #436: Lock screen circular view — TTL ring with vault indicator
+            TTLAccessoryCircularView(entry: entry)
         default:
             smallView
         }
@@ -195,6 +262,7 @@ struct TTLWidgetView: View {
     // MARK: .systemSmall — vault name + TTL countdown only
     private var smallView: some View {
         VStack(alignment: .leading, spacing: 4) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -235,6 +303,7 @@ struct TTLWidgetView: View {
     // MARK: .systemMedium — TTL + balance + quick check-in
     private var mediumView: some View {
         VStack(alignment: .leading, spacing: 6) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -280,6 +349,7 @@ struct TTLWidgetView: View {
     // MARK: .systemLarge — TTL + balance + beneficiary + quick check-in
     private var largeView: some View {
         VStack(alignment: .leading, spacing: 8) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -346,6 +416,7 @@ struct TTLWidgetView: View {
     // MARK: .accessoryRectangular / .accessoryCircular — compact lock-screen view with quick action
     private var compactView: some View {
         VStack(alignment: .leading, spacing: 4) {
+            errorBanner  // #435
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
@@ -389,6 +460,97 @@ struct TTLWidgetView: View {
 
     private func formatDuration(_ seconds: UInt64) -> String {
         DateTimeFormatter.shared.formatDurationInSeconds(seconds)
+    }
+}
+
+// MARK: - Lock Screen Widget Views (#436)
+//
+// accessoryRectangular and accessoryCircular are iOS 16+ lock screen families.
+// Both are read-only displays — the tap target opens the app via widgetURL to
+// the vault detail screen where the user can check in.
+//
+// Quick Check-In from the lock screen is wired via QuickCheckInIntent (Button with
+// AppIntent) — the medium home-screen widget includes this; the lock screen families
+// use widgetURL only because interactive controls require WidgetKit interactivity
+// (iOS 17+) which is a future enhancement.
+
+/// #436: Rectangular lock screen widget — vault name + TTL countdown.
+/// Shown in the `.accessoryRectangular` WidgetKit family (iOS 16+).
+struct TTLAccessoryRectangularView: View {
+    let entry: VaultEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
+                .font(.caption2.bold())
+                .accessibilityHidden(true)
+            Text(entry.vaultName)
+                .font(.caption.bold())
+                .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
+            if let ttl = entry.ttlRemaining {
+                Text(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+                    .font(.caption2)
+                    .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+            } else {
+                Text(entry.hasError ? LocalizedStrings.widgetErrorTitle : "—")
+                    .font(.caption2)
+                    .foregroundStyle(entry.hasError ? .red : .secondary)
+                    .accessibilityLabel(entry.hasError ? "Sync failed" : "Time remaining unknown")
+            }
+        }
+        .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// #436: Circular lock screen widget — TTL as a compact Gauge ring.
+/// Shown in the `.accessoryCircular` WidgetKit family (iOS 16+).
+struct TTLAccessoryCircularView: View {
+    let entry: VaultEntry
+
+    // Maximum TTL shown as a full ring (24 hours expressed in seconds).
+    private let maxTTL: Double = 86_400
+
+    var body: some View {
+        ZStack {
+            if let ttl = entry.ttlRemaining {
+                let fraction = min(Double(ttl) / maxTTL, 1.0)
+                Gauge(value: fraction) {
+                    Image(systemName: "lock.shield.fill")
+                        .accessibilityHidden(true)
+                } currentValueLabel: {
+                    Text(compactDuration(ttl))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.5)
+                        .accessibilityLabel("Time remaining")
+                        .accessibilityValue(DateTimeFormatter.shared.formatDurationInSeconds(ttl))
+                }
+                .gaugeStyle(.accessoryCircular)
+                .tint(entry.isExpiringSoon ? .orange : .cyan)
+            } else {
+                // Error or no-data state — show shield with exclamation
+                Image(systemName: entry.hasError ? "exclamationmark.icloud.fill" : "lock.shield")
+                    .font(.title3)
+                    .foregroundStyle(entry.hasError ? .red : .secondary)
+                    .accessibilityLabel(entry.hasError ? "Sync failed" : "No vault data")
+            }
+        }
+        .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+    }
+
+    /// Compact 4-char-max duration for the circular widget label (e.g. "23h", "2d").
+    private func compactDuration(_ seconds: UInt64) -> String {
+        let hours = seconds / 3600
+        let days = seconds / 86400
+        if days > 0 { return "\(days)d" }
+        if hours > 0 { return "\(hours)h" }
+        return "\(seconds / 60)m"
     }
 }
 

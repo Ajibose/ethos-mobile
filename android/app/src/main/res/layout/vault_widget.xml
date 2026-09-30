@@ -36,4 +36,16 @@
         android:layout_marginTop="4dp"
         android:text="Last check-in: —" />
 
+    <!-- #435: Error indicator — hidden by default, shown when sync fails -->
+    <TextView
+        android:id="@+id/widget_error_indicator"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="11sp"
+        android:textColor="#FFFF453A"
+        android:layout_marginTop="6dp"
+        android:text="⚠ Sync failed · Tap to retry"
+        android:visibility="gone"
+        android:contentDescription="Sync failed. Tap to retry." />
+
 </LinearLayout>
