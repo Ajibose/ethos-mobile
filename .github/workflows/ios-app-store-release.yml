@@ -1,0 +1,247 @@
+name: iOS App Store Release
+
+# Builds a signed Release build with fastlane (ios/EthosProtocol/fastlane/Fastfile),
+# uploads it to TestFlight for internal testers, and, only when requested AND
+# approved on the protected `app-store` environment, updates the App Store
+# version (What's New, optional metadata/screenshots) and submits it for review.
+#
+# Setup, secrets and the first-run checklist: docs/ios-app-store-release.md
+#
+# Triggers:
+#   - Tag vX.Y.Z (must equal MARKETING_VERSION in project.yml): real TestFlight upload.
+#     Review submission on tags only if the IOS_SUBMIT_FOR_REVIEW_ON_TAG variable is "true".
+#   - Manual dispatch: dry run by default.
+#
+# Deliberately NOT triggered by pull_request: fork PRs get no secrets, and
+# nothing that uploads to App Store Connect may run from unreviewed code.
+#
+# Required secrets:  ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64,
+#                    MATCH_GIT_URL, MATCH_PASSWORD,
+#                    MATCH_GIT_BASIC_AUTHORIZATION (when MATCH_GIT_URL is https),
+#                    ETHOS_CERT_PINS (already used by Android CI)
+# Required variable: APPLE_TEAM_IDENTIFIER (already used by ios-applinks-verify.yml)
+# Optional variable: IOS_SUBMIT_FOR_REVIEW_ON_TAG
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: validate and build unsigned, upload nothing"
+        type: boolean
+        default: true
+      submit_for_review:
+        description: "Submit the TestFlight build for App Review (waits for app-store environment approval)"
+        type: boolean
+        default: false
+      upload_metadata:
+        description: "Upload listing text from fastlane/metadata (also automatic when it changed since the last tag)"
+        type: boolean
+        default: false
+      upload_screenshots:
+        description: "Replace screenshots from fastlane/screenshots (also automatic when they changed since the last tag)"
+        type: boolean
+        default: false
+      release_notes:
+        description: "Override What's New for every locale (empty = generate from commits)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One release at a time; a second tag waits instead of racing for build numbers.
+concurrency:
+  group: ios-app-store-release
+  cancel-in-progress: false
+
+env:
+  XCODE_VERSION: "26.6"
+  FASTLANE_SKIP_UPDATE_CHECK: "1"
+  FASTLANE_HIDE_CHANGELOG: "1"
+  FASTLANE_OPT_OUT_USAGE: "1"
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+
+jobs:
+  testflight:
+    name: Build and upload to TestFlight
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    outputs:
+      version: ${{ steps.beta.outputs.version }}
+      build_number: ${{ steps.beta.outputs.build_number }}
+      submit_for_review: ${{ steps.options.outputs.submit_for_review }}
+      upload_metadata: ${{ steps.options.outputs.upload_metadata }}
+      upload_screenshots: ${{ steps.options.outputs.upload_screenshots }}
+      run_app_store: ${{ steps.options.outputs.run_app_store }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags: release notes and change detection diff
+          # against the previous vX.Y.Z tag.
+          fetch-depth: 0
+
+      - name: Resolve release options
+        id: options
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_SUBMIT: ${{ inputs.submit_for_review }}
+          INPUT_METADATA: ${{ inputs.upload_metadata }}
+          INPUT_SCREENSHOTS: ${{ inputs.upload_screenshots }}
+          SUBMIT_ON_TAG: ${{ vars.IOS_SUBMIT_FOR_REVIEW_ON_TAG }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            dry_run=false
+            submit=$([ "$SUBMIT_ON_TAG" = "true" ] && echo true || echo false)
+            metadata=false
+            screenshots=false
+          else
+            dry_run=$INPUT_DRY_RUN
+            submit=$INPUT_SUBMIT
+            metadata=$INPUT_METADATA
+            screenshots=$INPUT_SCREENSHOTS
+          fi
+
+          # Real uploads only from main or a release tag.
+          if [ "$dry_run" != "true" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/v* ]]; then
+            echo "::error::Uploads run only from main or a vX.Y.Z tag (got $REF). Use dry_run for other branches."
+            exit 1
+          fi
+
+          # Store listing changes since the previous release tag are uploaded
+          # automatically; otherwise the listing is left alone.
+          if git describe --tags --exact-match --match 'v[0-9]*' HEAD >/dev/null 2>&1; then
+            since=HEAD^
+          else
+            since=HEAD
+          fi
+          prev_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$since" 2>/dev/null || true)
+          changed() {
+            if [ -n "$prev_tag" ]; then
+              git diff --name-only "$prev_tag" HEAD -- "fastlane/$1" | grep -v '/README.md$' | grep -q .
+            else
+              git ls-files "fastlane/$1" | grep -v '/README.md$' | grep -q .
+            fi
+          }
+          changed metadata && metadata=true
+          changed screenshots && screenshots=true
+
+          run_app_store=false
+          if [ "$dry_run" != "true" ] && { [ "$submit" = "true" ] || [ "$metadata" = "true" ] || [ "$screenshots" = "true" ]; }; then
+            run_app_store=true
+          fi
+
+          {
+            echo "dry_run=$dry_run"
+            echo "submit_for_review=$submit"
+            echo "upload_metadata=$metadata"
+            echo "upload_screenshots=$screenshots"
+            echo "run_app_store=$run_app_store"
+          } | tee -a "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release options"
+            echo "| Option | Value |"
+            echo "| --- | --- |"
+            echo "| Ref | \`$REF\` |"
+            echo "| Previous release tag | \`${prev_tag:-none}\` |"
+            echo "| Dry run | $dry_run |"
+            echo "| Submit for review | $submit |"
+            echo "| Upload metadata | $metadata |"
+            echo "| Upload screenshots | $screenshots |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          XCODE="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ ! -d "$XCODE" ]; then
+            echo "::error::$XCODE is not on this runner image. Installed:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Set up Ruby and fastlane (cached)
+        uses: ruby/setup-ruby@v1
+        with:
+          working-directory: ios/EthosProtocol
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build and upload to TestFlight (fastlane ios beta)
+        id: beta
+        env:
+          DRY_RUN: ${{ steps.options.outputs.dry_run }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          RELEASE_NOTES_OVERRIDE: ${{ inputs.release_notes }}
+          APPLE_TEAM_IDENTIFIER: ${{ vars.APPLE_TEAM_IDENTIFIER }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+        run: bundle exec fastlane ios beta dry_run:"$DRY_RUN"
+
+      # A dry run also walks the App Store lane, so unanswered review questions
+      # or bad metadata/screenshots show up before anyone asks for approval.
+      - name: Validate App Store step (dry run)
+        if: steps.options.outputs.dry_run == 'true'
+        env:
+          RELEASE_NOTES_OVERRIDE: ${{ inputs.release_notes }}
+          SUBMIT: ${{ steps.options.outputs.submit_for_review }}
+          METADATA: ${{ steps.options.outputs.upload_metadata }}
+          SCREENSHOTS: ${{ steps.options.outputs.upload_screenshots }}
+        run: |
+          bundle exec fastlane ios app_store dry_run:true build_number:dry-run \
+            submit_for_review:"$SUBMIT" upload_metadata:"$METADATA" upload_screenshots:"$SCREENSHOTS"
+
+  app-store:
+    name: App Store version and review submission
+    needs: testflight
+    if: needs.testflight.outputs.run_app_store == 'true'
+    # Protected environment: configure required reviewers (and restrict it to
+    # main + v* tags) so nothing reaches App Review without a human approval.
+    environment: app-store
+    runs-on: ubuntu-24.04
+    # deliver waits for TestFlight processing before submitting.
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Ruby and fastlane (cached)
+        uses: ruby/setup-ruby@v1
+        with:
+          working-directory: ios/EthosProtocol
+          bundler-cache: true
+
+      - name: Update App Store version (fastlane ios app_store)
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          RELEASE_NOTES_OVERRIDE: ${{ inputs.release_notes }}
+          TESTFLIGHT_BUILD: ${{ needs.testflight.outputs.build_number }}
+          SUBMIT: ${{ needs.testflight.outputs.submit_for_review }}
+          METADATA: ${{ needs.testflight.outputs.upload_metadata }}
+          SCREENSHOTS: ${{ needs.testflight.outputs.upload_screenshots }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          bundle exec fastlane ios app_store build_number:"$TESTFLIGHT_BUILD" \
+            submit_for_review:"$SUBMIT" upload_metadata:"$METADATA" upload_screenshots:"$SCREENSHOTS"
