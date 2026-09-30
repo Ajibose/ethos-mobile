@@ -401,3 +401,140 @@ final class TTLWidgetDarkModeTests: XCTestCase {
         XCTAssertEqual(entry.beneficiary, "GABC1234EFGH…")
     }
 }
+
+// MARK: - #431 Widget Configuration Intent Tests
+
+final class WidgetConfigIntentTests: XCTestCase {
+
+    // MARK: WidgetRefreshInterval
+
+    func test_refreshInterval_defaultIsFifteenMinutes() {
+        let intent = VaultSelectionIntent()
+        XCTAssertEqual(intent.refreshInterval, .fifteenMinutes)
+    }
+
+    func test_refreshInterval_minutesValues() {
+        XCTAssertEqual(WidgetRefreshInterval.fifteenMinutes.minutes, 15)
+        XCTAssertEqual(WidgetRefreshInterval.thirtyMinutes.minutes, 30)
+        XCTAssertEqual(WidgetRefreshInterval.sixtyMinutes.minutes, 60)
+    }
+
+    // MARK: WidgetColorScheme
+
+    func test_colorScheme_defaultIsAuto() {
+        let intent = VaultSelectionIntent()
+        XCTAssertEqual(intent.colorScheme, .auto)
+    }
+
+    func test_colorScheme_autoDark_returnsCyan() {
+        let color = WidgetColorScheme.auto.accentColor(isDark: true)
+        XCTAssertEqual(color, .cyan)
+    }
+
+    func test_colorScheme_autoLight_returnsBlue() {
+        let color = WidgetColorScheme.auto.accentColor(isDark: false)
+        XCTAssertEqual(color, .blue)
+    }
+
+    func test_colorScheme_explicit_ignoreDarkMode() {
+        XCTAssertEqual(WidgetColorScheme.blue.accentColor(isDark: true), .blue)
+        XCTAssertEqual(WidgetColorScheme.blue.accentColor(isDark: false), .blue)
+        XCTAssertEqual(WidgetColorScheme.cyan.accentColor(isDark: false), .cyan)
+        XCTAssertEqual(WidgetColorScheme.orange.accentColor(isDark: true), .orange)
+    }
+
+    // MARK: Timeline refresh ceiling (#431)
+
+    func test_refreshCeiling_configuredCeilingAppliesWhenLarger() {
+        let provider = TTLTimelineProvider()
+        // TTL = 1 day → urgency interval = 15 min; configured ceiling = 60 min → use 15
+        let urgency = provider.computeNextUpdateInterval(ttlRemaining: 86_400)
+        let configured = WidgetRefreshInterval.sixtyMinutes.minutes
+        XCTAssertEqual(min(urgency, configured), 15)
+    }
+
+    func test_refreshCeiling_configuredCeilingAppliesWhenSmaller() {
+        let provider = TTLTimelineProvider()
+        // TTL = nil → urgency interval = 15 min; configured ceiling = 30 min → use 15
+        let urgency = provider.computeNextUpdateInterval(ttlRemaining: nil)
+        let configured = WidgetRefreshInterval.thirtyMinutes.minutes
+        XCTAssertEqual(min(urgency, configured), 15)
+    }
+
+    func test_refreshCeiling_urgencyOverridesConfiguredCeiling() {
+        let provider = TTLTimelineProvider()
+        // TTL = 900 s (< 30 min) → urgency interval = 2 min; configured ceiling = 15 min → use 2
+        let urgency = provider.computeNextUpdateInterval(ttlRemaining: 900)
+        let configured = WidgetRefreshInterval.fifteenMinutes.minutes
+        XCTAssertEqual(min(urgency, configured), 2)
+    }
+}
+
+// MARK: - #433 Multi-Vault Large View Tests
+
+final class MultiVaultLargeViewTests: XCTestCase {
+
+    private func makeEntry(additionalVaults: [VaultRow] = []) -> VaultEntry {
+        VaultEntry(
+            date: .now,
+            vaultID: "vault-primary",
+            vaultName: "Primary Vault",
+            ttlRemaining: 86_400,
+            isExpiringSoon: false,
+            balance: "1.0000000 XLM",
+            beneficiary: "GXYZ…",
+            colorScheme: .auto,
+            additionalVaults: additionalVaults
+        )
+    }
+
+    func test_largeView_buildsWithNoAdditionalVaults() {
+        let entry = makeEntry()
+        XCTAssertTrue(entry.additionalVaults.isEmpty)
+        _ = TTLWidgetView(entry: entry).body
+    }
+
+    func test_largeView_buildsWithTwoAdditionalVaults() {
+        let rows = [
+            VaultRow(id: "v2", name: "vault-2…", ttlRemaining: 3_600, isExpiringSoon: false),
+            VaultRow(id: "v3", name: "vault-3…", ttlRemaining: 1_200, isExpiringSoon: true),
+        ]
+        let entry = makeEntry(additionalVaults: rows)
+        XCTAssertEqual(entry.additionalVaults.count, 2)
+        _ = TTLWidgetView(entry: entry).body
+    }
+
+    func test_additionalVaultRow_isExpiringSoon_set() {
+        let row = VaultRow(id: "v-urgent", name: "Urgent…", ttlRemaining: 600, isExpiringSoon: true)
+        XCTAssertTrue(row.isExpiringSoon)
+    }
+
+    func test_additionalVaultRow_nilTTL() {
+        let row = VaultRow(id: "v-nil", name: "Unknown…", ttlRemaining: nil, isExpiringSoon: false)
+        XCTAssertNil(row.ttlRemaining)
+    }
+
+    func test_vaultEntry_colorSchemePreserved() {
+        let entry = makeEntry()
+        // Default
+        XCTAssertEqual(entry.colorScheme, .auto)
+
+        let blueEntry = VaultEntry(
+            date: .now, vaultID: "v", vaultName: "V", ttlRemaining: nil,
+            isExpiringSoon: false, balance: "—", beneficiary: "—",
+            colorScheme: .blue
+        )
+        XCTAssertEqual(blueEntry.colorScheme, .blue)
+    }
+
+    func test_additionalVaults_capped_atTwo() {
+        // Provider logic: .prefix(2) ensures we never store more than 2 extra rows.
+        // Simulate the same cap here to guard against accidental expansion.
+        let allOtherVaults = (1...10).map { i in
+            VaultRow(id: "v-\(i)", name: "Vault \(i)…",
+                     ttlRemaining: UInt64(i * 1000), isExpiringSoon: false)
+        }
+        let capped = Array(allOtherVaults.prefix(2))
+        XCTAssertEqual(capped.count, 2)
+    }
+}

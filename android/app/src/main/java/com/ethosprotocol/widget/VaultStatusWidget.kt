@@ -65,6 +65,20 @@ class VaultStatusWidget : AppWidgetProvider() {
         // Selected-vault key stored in per-widget prefs; written by VaultWidgetConfigActivity.
         private const val KEY_SELECTED_VAULT_ID = "selected_vault_id"
 
+        // #431: Refresh interval (minutes) and colour scheme preference keys.
+        const val KEY_REFRESH_INTERVAL_MINUTES = "refresh_interval_minutes"
+        const val KEY_COLOR_SCHEME = "color_scheme"
+        const val DEFAULT_REFRESH_INTERVAL = 15
+
+        // #433: Additional vault rows (encoded as "id1|name1|ttl1,id2|name2|ttl2").
+        private const val KEY_ADDITIONAL_VAULTS = "additional_vaults"
+
+        // Colour scheme constants (#431).
+        const val COLOR_SCHEME_AUTO   = "auto"
+        const val COLOR_SCHEME_BLUE   = "blue"
+        const val COLOR_SCHEME_GREEN  = "green"
+        const val COLOR_SCHEME_ORANGE = "orange"
+
         /**
          * Saves vault display data to per-widget SharedPreferences (#246).
          * Each widget ID maps to its own prefs file so data is isolated per instance.
@@ -110,17 +124,69 @@ class VaultStatusWidget : AppWidgetProvider() {
                 .apply()
         }
 
+        /** Persists the user-configured refresh interval (minutes) for this widget (#431). */
+        fun saveRefreshIntervalMinutes(context: Context, widgetId: Int, minutes: Int) {
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
+                .putInt(KEY_REFRESH_INTERVAL_MINUTES, minutes)
+                .apply()
+        }
+
+        /** Returns the persisted refresh interval in minutes, defaulting to 15 (#431). */
+        fun getRefreshIntervalMinutes(context: Context, widgetId: Int): Int =
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
+                .getInt(KEY_REFRESH_INTERVAL_MINUTES, DEFAULT_REFRESH_INTERVAL)
+
+        /** Persists the user-configured colour scheme for this widget (#431). */
+        fun saveColorScheme(context: Context, widgetId: Int, scheme: String) {
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
+                .putString(KEY_COLOR_SCHEME, scheme)
+                .apply()
+        }
+
+        /** Returns the persisted colour scheme string, defaulting to "auto" (#431). */
+        fun getColorScheme(context: Context, widgetId: Int): String =
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
+                .getString(KEY_COLOR_SCHEME, COLOR_SCHEME_AUTO) ?: COLOR_SCHEME_AUTO
+
+        /**
+         * Persists up to 2 additional vault rows for the multi-vault large layout (#433).
+         * Encoded as a comma-separated list of "id|name|ttl" triples.
+         */
+        fun saveAdditionalVaults(context: Context, widgetId: Int, vaults: List<Triple<String, String, String>>) {
+            val encoded = vaults.take(2).joinToString(",") { (id, name, ttl) -> "$id|$name|$ttl" }
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
+                .putString(KEY_ADDITIONAL_VAULTS, encoded)
+                .apply()
+        }
+
+        /**
+         * Returns up to 2 additional vault rows as (id, name, ttl) triples (#433).
+         */
+        fun getAdditionalVaults(context: Context, widgetId: Int): List<Triple<String, String, String>> {
+            val raw = context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
+                .getString(KEY_ADDITIONAL_VAULTS, null) ?: return emptyList()
+            return raw.split(",")
+                .mapNotNull { entry ->
+                    val parts = entry.split("|")
+                    if (parts.size == 3) Triple(parts[0], parts[1], parts[2]) else null
+                }
+        }
+
         /**
          * Chooses the correct layout resource based on the widget's current width (#247).
          * Reads OPTION_APPWIDGET_MIN_WIDTH from the options bundle:
          *   width < 180dp  → small  (TTL only)
          *   180 ≤ width < 250dp → medium (TTL + balance)
-         *   width ≥ 250dp  → large  (TTL + balance + beneficiary)
+         *   width ≥ 250dp  → large  (TTL + balance + beneficiary + optional multi-vault rows)
+         *
+         * #433: When the large size is selected AND there are additional vaults persisted for
+         * this widget instance, we use the multi-vault layout instead.
          */
-        fun selectLayout(options: Bundle): Int {
+        fun selectLayout(options: Bundle, hasAdditionalVaults: Boolean = false): Int {
             val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
             return when {
-                minWidth >= 250 -> R.layout.vault_widget_large
+                minWidth >= 250 -> if (hasAdditionalVaults) R.layout.vault_widget_large_multi
+                                   else R.layout.vault_widget_large
                 minWidth >= 180 -> R.layout.vault_widget_medium
                 else -> R.layout.vault_widget_small
             }
@@ -151,39 +217,19 @@ class VaultStatusWidget : AppWidgetProvider() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            // Pick layout based on current widget size options (#247).
-            val options = manager.getAppWidgetOptions(widgetId)
-            val layoutId = selectLayout(options)
+            // #433: Determine if we have extra vault rows to decide which large layout to use.
+            val additionalVaults = getAdditionalVaults(context, widgetId)
 
-            // ---------------------------------------------------------------------------
-            // #439: Widget Dark Mode Support
-            //
-            // Android supports widget dark mode via night-mode resource qualifiers.
-            // The recommended approach is:
-            //   res/layout/vault_widget.xml       — light-mode layout (hardcoded light colours)
-            //   res/layout-night/vault_widget.xml — dark-mode layout (dark background + light text)
-            //
-            // At runtime, Android selects the appropriate layout automatically based on the
-            // current UI mode, so RemoteViews built from R.layout.vault_widget will already
-            // pick up the night variant when the device is in dark mode.
-            //
-            // If vault_widget.xml currently uses hardcoded colours (e.g. #FF1C1C1E background,
-            // white text), add res/layout-night/vault_widget.xml with dark-surface colours
-            // (e.g. #FF2C2C2E background, #EBEBF5 text) and the same view IDs so the code
-            // below works unchanged.
-            //
-            // As a runtime fallback, we also detect dark mode here and can apply
-            // RemoteViews.setColorAttr / setInt overrides for fine-grained control.
-            // ---------------------------------------------------------------------------
+            // Pick layout based on current widget size options (#247 / #433).
+            val options = manager.getAppWidgetOptions(widgetId)
+            val layoutId = selectLayout(options, hasAdditionalVaults = additionalVaults.isNotEmpty())
+
             val isDarkMode = context.resources.configuration.uiMode and
                     Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
             val views = RemoteViews(context.packageName, layoutId).apply {
                 setTextViewText(R.id.widget_vault_name, vaultName)
                 setTextViewText(R.id.widget_ttl, "TTL: $ttl")
-                // Medium and large layouts include balance / beneficiary views.
-                // setTextViewText on a view that doesn't exist in the current layout is a no-op
-                // for RemoteViews, so these calls are safe across all layout sizes.
                 setTextViewText(R.id.widget_balance, balance)
                 setTextViewText(R.id.widget_beneficiary, beneficiary)
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
@@ -209,6 +255,22 @@ class VaultStatusWidget : AppWidgetProvider() {
                     setInt(R.id.widget_root, "setBackgroundColor", 0xFF1C1C1E.toInt())
                 } else {
                     setInt(R.id.widget_root, "setBackgroundColor", android.graphics.Color.WHITE)
+                }
+
+                // #433: Populate additional vault rows in the multi-vault large layout.
+                // setViewVisibility on IDs that don't exist in the current layout is a no-op
+                // for RemoteViews, so these calls are safe across all layout variants.
+                if (additionalVaults.isNotEmpty()) {
+                    val (id2, name2, ttl2) = additionalVaults[0]
+                    setViewVisibility(R.id.widget_vault2_row, android.view.View.VISIBLE)
+                    setTextViewText(R.id.widget_vault2_name, name2)
+                    setTextViewText(R.id.widget_vault2_ttl, ttl2)
+                }
+                if (additionalVaults.size >= 2) {
+                    val (id3, name3, ttl3) = additionalVaults[1]
+                    setViewVisibility(R.id.widget_vault3_row, android.view.View.VISIBLE)
+                    setTextViewText(R.id.widget_vault3_name, name3)
+                    setTextViewText(R.id.widget_vault3_ttl, ttl3)
                 }
             }
             manager.updateAppWidget(widgetId, views)
@@ -290,6 +352,21 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 } else {
                     urgentVault
                 }
+
+                // #433: Save up to 2 additional vault rows (all active vaults except primary).
+                val additionalVaultData = vaults
+                    .filter { it.id != vault.id }
+                    .sortedBy { it.ttlRemaining ?: Long.MAX_VALUE }
+                    .take(2)
+                    .map { v ->
+                        Triple(
+                            v.id,
+                            v.id.take(12) + "…",
+                            formatTtl(applicationContext, v.ttlRemaining)
+                        )
+                    }
+                VaultStatusWidget.saveAdditionalVaults(applicationContext, widgetId, additionalVaultData)
+
                 VaultStatusWidget.saveVaultData(
                     applicationContext,
                     widgetId = widgetId,

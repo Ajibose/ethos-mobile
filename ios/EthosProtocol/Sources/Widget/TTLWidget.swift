@@ -32,11 +32,17 @@ struct QuickCheckInIntent: AppIntent {
     }
 }
 
-// MARK: - Vault Selection Intent (#245 / #246)
+// MARK: - Vault Selection Intent (#245 / #246 / #431)
 //
 // Each widget instance stores its own VaultSelectionIntent automatically via
 // AppIntentConfiguration — per-instance config is handled by the framework with
 // no extra persistence code required on our side.
+//
+// #431: Two new parameters are added:
+//   - refreshInterval: how often (in minutes) the timeline should poll for new data.
+//     Options: 15 min (default), 30 min, 60 min.  Maps to WidgetKit's .after() policy.
+//   - colorScheme: tint colour preference for the widget accent.
+//     Options: system default (.auto), blue, cyan, or orange.
 //
 // SNAPSHOT TEST NOTE (#246):
 // Per-instance widget configuration is verified through AppIntentConfiguration's
@@ -48,15 +54,80 @@ struct QuickCheckInIntent: AppIntent {
 //   2. Intent set to a specific vault ID that exists → that vault shown
 //   3. Intent set to a vault ID that no longer exists → fallback to most-urgent
 
+/// Refresh interval options exposed in the widget configuration UI (#431).
+enum WidgetRefreshInterval: Int, AppEnum {
+    case fifteenMinutes = 15
+    case thirtyMinutes  = 30
+    case sixtyMinutes   = 60
+
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Refresh Interval"
+    static let caseDisplayRepresentations: [WidgetRefreshInterval: DisplayRepresentation] = [
+        .fifteenMinutes: "Every 15 minutes",
+        .thirtyMinutes:  "Every 30 minutes",
+        .sixtyMinutes:   "Every 60 minutes",
+    ]
+
+    /// Returns the interval in minutes to use for WidgetKit's `.after` policy.
+    /// Urgency-based overrides in `TTLTimelineProvider` may use a *shorter* interval
+    /// regardless of this preference; this value is only the user-configured ceiling.
+    var minutes: Int { rawValue }
+}
+
+/// Colour scheme / accent colour preference for the widget (#431).
+enum WidgetColorScheme: String, AppEnum {
+    case auto   = "auto"
+    case blue   = "blue"
+    case cyan   = "cyan"
+    case orange = "orange"
+
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Color Scheme"
+    static let caseDisplayRepresentations: [WidgetColorScheme: DisplayRepresentation] = [
+        .auto:   "System Default",
+        .blue:   "Blue",
+        .cyan:   "Cyan",
+        .orange: "Orange",
+    ]
+
+    /// Resolves the configured colour for use in SwiftUI views.
+    /// `.auto` defers to the dark/light adaptive logic already in `TTLWidgetView`.
+    func accentColor(isDark: Bool) -> Color {
+        switch self {
+        case .auto:   return isDark ? .cyan : .blue
+        case .blue:   return .blue
+        case .cyan:   return .cyan
+        case .orange: return .orange
+        }
+    }
+}
+
 struct VaultSelectionIntent: WidgetConfigurationIntent {
-    static let title: LocalizedStringResource = "Select Vault"
+    static let title: LocalizedStringResource = "Vault Widget Settings"
+
+    // #245 / #246: Primary vault selection (empty → urgency fallback).
     @Parameter(title: "Vault ID", default: "") var vaultID: String
+
+    // #431: Refresh interval preference.
+    @Parameter(title: "Refresh Interval", default: .fifteenMinutes)
+    var refreshInterval: WidgetRefreshInterval
+
+    // #431: Colour scheme preference.
+    @Parameter(title: "Color Scheme", default: .auto)
+    var colorScheme: WidgetColorScheme
 }
 
 // MARK: - Timeline Entry
 
+/// A single vault row shown in the multi-vault large view (#433).
+struct VaultRow: Identifiable {
+    let id: String          // vault ID (used as SwiftUI list identity)
+    let name: String
+    let ttlRemaining: UInt64?
+    let isExpiringSoon: Bool
+}
+
 struct VaultEntry: TimelineEntry {
     let date: Date
+    // Primary vault (shown in all sizes).
     let vaultID: String
     let vaultName: String
     let ttlRemaining: UInt64?
@@ -113,7 +184,8 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
             ttlRemaining: 86_400,
             isExpiringSoon: false,
             balance: "1.0000000 XLM",
-            beneficiary: "GXYZ…"
+            beneficiary: "GXYZ…",
+            colorScheme: intent.colorScheme
         )
     }
 
@@ -167,11 +239,76 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
                 beneficiary: "—",
                 hasError: true  // #435: show error indicator in widget
             )
+        } else {
+            do {
+                let vaults = try await APIClient.shared.listAllVaults()
+                let activeVaults = vaults.filter { $0.status == .active }
+
+                // If the intent specifies a vault ID, try to find that vault.
+                // Otherwise fall back to the most-urgent vault (lowest ttlRemaining).
+                let selected: Vault?
+                if !intent.vaultID.isEmpty {
+                    selected = activeVaults.first(where: { $0.id == intent.vaultID })
+                        ?? activeVaults.min(by: { ($0.ttlRemaining ?? UInt64.max) < ($1.ttlRemaining ?? UInt64.max) })
+                } else {
+                    selected = activeVaults.min(by: { ($0.ttlRemaining ?? UInt64.max) < ($1.ttlRemaining ?? UInt64.max) })
+                }
+
+                // #433: Build additional vault rows for the systemLarge multi-vault view.
+                // Sort all active vaults by urgency; exclude the primary so there are no
+                // duplicates; take up to 2 more (3 total including the primary row).
+                let otherVaults = activeVaults
+                    .filter { $0.id != selected?.id }
+                    .sorted { ($0.ttlRemaining ?? UInt64.max) < ($1.ttlRemaining ?? UInt64.max) }
+                    .prefix(2)
+                let additionalRows = otherVaults.map { v in
+                    VaultRow(
+                        id: v.id,
+                        name: String(v.id.prefix(12)) + "…",
+                        ttlRemaining: v.ttlRemaining,
+                        isExpiringSoon: v.isExpiringSoon
+                    )
+                }
+
+                entry = VaultEntry(
+                    date: .now,
+                    vaultID: selected?.id ?? "",
+                    vaultName: selected.map { String($0.id.prefix(12)) + "…" } ?? LocalizedStrings.noActiveVault,
+                    ttlRemaining: selected?.ttlRemaining,
+                    isExpiringSoon: selected?.isExpiringSoon ?? false,
+                    balance: selected.map { formatBalance($0.balance) } ?? "—",
+                    beneficiary: selected.map { String($0.beneficiary.prefix(12)) + "…" } ?? "—",
+                    colorScheme: intent.colorScheme,
+                    additionalVaults: additionalRows
+                )
+                // Record the successful data fetch so the app-side staleness gate reflects it.
+                smartRefresh.recordVaultDataUpdate()
+                if let minInterval = activeVaults.compactMap({ $0.ttlRemaining }).min() {
+                    // ttlRemaining is the time remaining (not the check-in interval), but for
+                    // infrequent-user detection we track checkInInterval where available;
+                    // fall back to ttlRemaining as a conservative proxy.
+                    smartRefresh.updateCheckInInterval(Double(minInterval))
+                }
+            } catch {
+                entry = VaultEntry(
+                    date: .now,
+                    vaultID: "",
+                    vaultName: LocalizedStrings.unavailable,
+                    ttlRemaining: nil,
+                    isExpiringSoon: false,
+                    balance: "—",
+                    beneficiary: "—",
+                    colorScheme: intent.colorScheme
+                )
+            }
         }
 
-        // Compute refresh interval based on vault urgency: refresh more frequently as TTL approaches zero.
-        // Scale from 15 min (normal) down to 1 min (critical), respecting WidgetKit's budget guidance.
-        let nextUpdateMinutes = computeNextUpdateInterval(ttlRemaining: entry.ttlRemaining)
+        // #431: Respect the user's configured refresh interval as a ceiling.
+        // Urgency-based shortening still applies when TTL is critically low —
+        // we use the *minimum* of the configured ceiling and the urgency interval.
+        let urgencyMinutes = computeNextUpdateInterval(ttlRemaining: entry.ttlRemaining)
+        let configuredCeiling = intent.refreshInterval.minutes
+        let nextUpdateMinutes = min(urgencyMinutes, configuredCeiling)
         let nextUpdate = Calendar.current.date(byAdding: .minute, value: nextUpdateMinutes, to: .now)!
         return Timeline(entries: [entry], policy: .after(nextUpdate))
     }
@@ -206,13 +343,10 @@ struct TTLWidgetView: View {
     // without needing separate dark/light layouts.
     @Environment(\.colorScheme) private var colorScheme
 
-    // #439: Accent colour adapts between schemes — .blue is legible on the light
-    // material background; .cyan has better contrast against the dark variant.
-    // .containerBackground(.regularMaterial, for: .widget) already handles the
-    // background colour automatically for both light and dark mode — no custom
-    // background logic is needed here.
+    // #431: Accent colour respects the user's configured colour scheme preference.
+    // Falls back to the dark/light adaptive default when set to .auto.
     private var widgetAccentColor: Color {
-        colorScheme == .dark ? .cyan : .blue
+        entry.colorScheme.accentColor(isDark: colorScheme == .dark)
     }
 
     // MARK: #435 — Error banner
@@ -346,7 +480,7 @@ struct TTLWidgetView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: .systemLarge — TTL + balance + beneficiary + quick check-in
+    // MARK: .systemLarge — primary vault full detail + up to 2 additional vaults (#433)
     private var largeView: some View {
         VStack(alignment: .leading, spacing: 8) {
             errorBanner  // #435
@@ -354,13 +488,38 @@ struct TTLWidgetView: View {
                 .font(.caption2.bold())
                 .foregroundStyle(widgetAccentColor)
                 .accessibilityHidden(true)
+
+            // Primary vault row
+            primaryVaultSection
+
+            // #433: Additional vault rows (shown only when there are more active vaults).
+            if !entry.additionalVaults.isEmpty {
+                Divider().accessibilityHidden(true)
+                Text("Other Vaults")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                ForEach(entry.additionalVaults) { row in
+                    additionalVaultRow(row)
+                }
+            }
+
+            Spacer().accessibilityHidden(true)
+        }
+        .padding()
+        .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
+    }
+
+    // Primary vault detail block (used by the large view).
+    private var primaryVaultSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
             Text(entry.vaultName)
                 .font(.title3.bold())
                 .lineLimit(1)
                 .accessibilityLabel("Vault name")
                 .accessibilityValue(entry.vaultName)
-            Divider()
-                .accessibilityHidden(true)
             if let ttl = entry.ttlRemaining {
                 LabeledContent(LocalizedStrings.ttlLabel) {
                     Text(formatDuration(ttl))
@@ -380,17 +539,14 @@ struct TTLWidgetView: View {
                 .accessibilityValue("Unknown")
             }
             LabeledContent(LocalizedStrings.balanceLabel) {
-                Text(entry.balance)
-                    .foregroundStyle(.secondary)
+                Text(entry.balance).foregroundStyle(.secondary)
             }
             .font(.subheadline)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Balance")
             .accessibilityValue(entry.balance)
             LabeledContent("Beneficiary") {
-                Text(entry.beneficiary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Text(entry.beneficiary).foregroundStyle(.secondary).lineLimit(1)
             }
             .font(.subheadline)
             .accessibilityElement(children: .combine)
@@ -400,17 +556,30 @@ struct TTLWidgetView: View {
                 Label(LocalizedStrings.expiringsoon, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
-                    .padding(.top, 4)
-                    .accessibilityLabel("Warning")
-                    .accessibilityValue("Vault expiring soon")
+                    .padding(.top, 2)
+                    .accessibilityLabel("Warning: vault expiring soon")
             }
-            Spacer()
-                .accessibilityHidden(true)
         }
-        .padding()
-        .containerBackground(.regularMaterial, for: .widget)
-        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+    }
+
+    // A compact row for one additional vault in the large multi-vault view (#433).
+    private func additionalVaultRow(_ row: VaultRow) -> some View {
+        HStack {
+            Text(row.name)
+                .font(.caption)
+                .lineLimit(1)
+                .foregroundStyle(.primary)
+            Spacer()
+            if let ttl = row.ttlRemaining {
+                Text(formatDuration(ttl))
+                    .font(.caption)
+                    .foregroundStyle(row.isExpiringSoon ? .orange : .secondary)
+            } else {
+                Text("—").font(.caption).foregroundStyle(.secondary)
+            }
+        }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(row.name), time remaining \(row.ttlRemaining.map { formatDuration($0) } ?? "unknown")")
     }
 
     // MARK: .accessoryRectangular / .accessoryCircular — compact lock-screen view with quick action

@@ -26,6 +26,22 @@
     <string name="widget_error_sync_failed">Sync failed</string>
     <string name="widget_error_tap_retry">Tap to retry</string>
 
+    <!-- Widget config — refresh interval step (#431) -->
+    <string name="widget_config_refresh_title">Refresh Interval</string>
+    <string name="widget_config_refresh_15">Every 15 minutes</string>
+    <string name="widget_config_refresh_30">Every 30 minutes</string>
+    <string name="widget_config_refresh_60">Every 60 minutes</string>
+
+    <!-- Widget config — color scheme step (#431) -->
+    <string name="widget_config_color_title">Color Scheme</string>
+    <string name="widget_config_color_auto">System Default</string>
+    <string name="widget_config_color_blue">Blue</string>
+    <string name="widget_config_color_green">Green</string>
+    <string name="widget_config_color_orange">Orange</string>
+
+    <!-- Multi-vault large widget (#433) -->
+    <string name="widget_other_vaults_label">Other Vaults</string>
+
     <!-- Authentication Screen strings -->
     <string name="app_title">Ethos-Protocol</string>
     <string name="app_tagline">Secure digital inheritance</string>
